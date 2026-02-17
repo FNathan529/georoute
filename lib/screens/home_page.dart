@@ -91,40 +91,56 @@ class _HomeContentState extends State<HomeContent> {
 
   StreamSubscription<List<Map<String, dynamic>>>? _destinationSubscription;
 
-  final List<String> _categories = [
-    'All',
-    'Beach',
-    'Waterfall',
-    'Mountain',
-    'Cultural',
-    'Adventure',
-    'Waterpark',
-  ];
+  late List<String> _categories = ['All'];
 
   @override
   void initState() {
     super.initState();
     _loadDestinations();
     _getUserLocation();
+    _loadCategories();
 
     // Real-time destination updates
     _destinationSubscription = Supabase.instance.client
         .from('destinations')
         .stream(primaryKey: ['id']).listen((List<Map<String, dynamic>> data) {
+      if (!mounted) return;
       setState(() {
         _allDestinations = data;
         _filterDestinations();
       });
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Destinations updated!'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-      }
     });
+  }
+
+  // NEW: Fetch categories from Supabase
+  Future<void> _loadCategories() async {
+    try {
+      final response = await Supabase.instance.client
+          .from('categories')
+          .select('name')
+          .order('name', ascending: true);
+
+      if (!mounted) return;
+
+      setState(() {
+        // Always keep 'All' as first option
+        _categories = ['All', ...response.map((row) => row['name'] as String)];
+      });
+    } catch (e) {
+      debugPrint('Error loading categories: $e');
+      // Fallback to hardcoded if fetch fails (optional)
+      setState(() {
+        _categories = [
+          'All',
+          'Beach',
+          'Waterfall',
+          'Mountain',
+          'Cultural',
+          'Adventure',
+          'Waterpark',
+        ];
+      });
+    }
   }
 
   @override
@@ -501,7 +517,7 @@ class _HomeContentState extends State<HomeContent> {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        '${data['distance_from_cdo'] ?? 'N/A'} • ${data['travel_time'] ?? 'N/A'}',
+                        '${data['location'] ?? 'N/A'} • ${data['travel_time'] ?? 'N/A'}',
                         style: TextStyle(fontSize: 13, color: Colors.grey[700]),
                       ),
                       const SizedBox(height: 4),

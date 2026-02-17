@@ -10,7 +10,7 @@ class AdminDestinationsPage extends StatefulWidget {
 }
 
 class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
-  final SupabaseService _service = SupabaseService();
+  late SupabaseService _service;
   List<Map<String, dynamic>> _destinations = [];
   List<String> _availableCategories = [];
   bool _isLoading = true;
@@ -20,6 +20,7 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
   @override
   void initState() {
     super.initState();
+    _service = SupabaseService();
     _loadDestinations();
     _loadCategories();
   }
@@ -149,7 +150,7 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
     );
   }
 
-  // ─── ADD DESTINATION DIALOG (manual lat/long only) ────────────────────────
+  // ─── ADD DESTINATION DIALOG ───────────────────────────────────────────────
   void _showAddDestinationDialog() {
     final nameController = TextEditingController();
     final descController = TextEditingController();
@@ -157,10 +158,12 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
     final activitiesController = TextEditingController();
     final accommodationController = TextEditingController();
     final priceController = TextEditingController();
+    final locationController = TextEditingController(); // ← Fixed name
     final timeController = TextEditingController();
     final imageController = TextEditingController();
     final latController = TextEditingController();
     final lngController = TextEditingController();
+
     String? selectedCategory =
         _availableCategories.isNotEmpty ? _availableCategories.first : null;
 
@@ -204,10 +207,12 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
               _buildLabelAndField('Price Range', '₱50 – ₱500',
                   controller: priceController),
               const SizedBox(height: 16),
+              _buildLabelAndField(
+                  'Location', 'Cagayan de Oro City, Jasaan, etc.',
+                  controller: locationController),
+              const SizedBox(height: 16),
               _buildLabelAndField('Travel Time from CDO', '45 mins – 1 hour',
                   controller: timeController),
-
-              // ─── MANUAL LATITUDE & LONGITUDE (no map picker) ──────────────────
               const SizedBox(height: 24),
               const Text('Location Coordinates (Manual)',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
@@ -242,14 +247,6 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
               double? longitude =
                   lngText.isNotEmpty ? double.tryParse(lngText) : null;
 
-              // Optional: require location (uncomment if needed)
-              // if (latitude == null || longitude == null) {
-              //   ScaffoldMessenger.of(context).showSnackBar(
-              //     const SnackBar(content: Text('Please enter latitude and longitude'), backgroundColor: Colors.red),
-              //   );
-              //   return;
-              // }
-
               final newDest = {
                 'name': name,
                 'category': selectedCategory,
@@ -261,8 +258,8 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
                 'activities': activitiesController.text.trim(),
                 'accommodation': accommodationController.text.trim(),
                 'price_range': priceController.text.trim(),
+                'location': locationController.text.trim(),
                 'travel_time': timeController.text.trim(),
-                'distance_from_cdo': 'N/A',
                 'rating': 4.0,
                 'status': 'active',
                 'latitude': latitude,
@@ -306,6 +303,8 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
         TextEditingController(text: data['accommodation'] ?? '');
     final priceController =
         TextEditingController(text: data['price_range'] ?? '');
+    final locationController =
+        TextEditingController(text: data['location'] ?? '');
     final timeController =
         TextEditingController(text: data['travel_time'] ?? '');
     final imageController =
@@ -314,6 +313,7 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
         TextEditingController(text: data['latitude']?.toString() ?? '');
     final lngController =
         TextEditingController(text: data['longitude']?.toString() ?? '');
+
     String? selectedCategory = data['category'];
     if (selectedCategory == null ||
         !_availableCategories.contains(selectedCategory)) {
@@ -360,10 +360,12 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
               _buildLabelAndField('Price Range', '₱50 – ₱500',
                   controller: priceController),
               const SizedBox(height: 16),
+              _buildLabelAndField(
+                  'Location', 'Cagayan de Oro City, Jasaan, etc.',
+                  controller: locationController),
+              const SizedBox(height: 16),
               _buildLabelAndField('Travel Time from CDO', '45 mins – 1 hour',
                   controller: timeController),
-
-              // ─── MANUAL LATITUDE & LONGITUDE (no map picker) ──────────────────
               const SizedBox(height: 24),
               const Text('Location Coordinates (Manual)',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
@@ -396,6 +398,7 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
                 'activities': activitiesController.text.trim(),
                 'accommodation': accommodationController.text.trim(),
                 'price_range': priceController.text.trim(),
+                'location': locationController.text.trim(),
                 'travel_time': timeController.text.trim(),
                 'status': data['status'] ?? 'active',
                 'latitude': double.tryParse(latController.text.trim()),
@@ -554,9 +557,7 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
     );
   }
 
-  // ─── YOUR EXISTING HELPERS (sidebar, header, search, table headers, row) ──
-  // (unchanged — just included for completeness)
-
+  // ─── SIDE NAVIGATION & OTHER HELPERS (unchanged) ──────────────────────────
   Widget _buildSideNavigationBar(BuildContext context) {
     return Container(
       width: 250,
@@ -712,6 +713,9 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
   }
 
   Widget _buildDestinationRow(Map<String, dynamic> data) {
+    final imageUrl =
+        data['image_url'] as String? ?? 'https://via.placeholder.com/50';
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12.0),
       child: Row(
@@ -723,12 +727,16 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
                 ClipRRect(
                   borderRadius: BorderRadius.circular(10),
                   child: Image.network(
-                    data['image_url'] ?? 'https://via.placeholder.com/50',
+                    imageUrl,
                     width: 50,
                     height: 50,
                     fit: BoxFit.cover,
                     errorBuilder: (c, e, s) => Container(
-                        width: 50, height: 50, color: Colors.grey[300]),
+                      width: 50,
+                      height: 50,
+                      color: Colors.grey[300],
+                      child: const Icon(Icons.broken_image, color: Colors.grey),
+                    ),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -764,7 +772,7 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(data['distance_from_cdo'] ?? 'N/A',
+                Text(data['location'] ?? 'N/A',
                     style: const TextStyle(fontWeight: FontWeight.bold)),
                 Text(data['travel_time'] ?? 'N/A',
                     style: TextStyle(color: Colors.grey[600], fontSize: 12)),

@@ -10,13 +10,14 @@ class AdminCategoriesPage extends StatefulWidget {
 }
 
 class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
-  final SupabaseService _service = SupabaseService();
+  late SupabaseService _service;
   List<Map<String, dynamic>> _categories = [];
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
+    _service = SupabaseService();
     _loadCategories();
   }
 

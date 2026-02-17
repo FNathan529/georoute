@@ -11,12 +11,16 @@ import '../services/supabase_service.dart';
 import 'bucket_list_page.dart';
 
 class MapPage extends StatefulWidget {
-  const MapPage({
-    Key? key,
-    required this.currentUserId,
-  }) : super(key: key);
-
   final String currentUserId;
+  final Map<String, dynamic>? initialDestination;
+  final bool autoStartNavigation;
+
+  const MapPage({
+    super.key,
+    required this.currentUserId,
+    this.initialDestination,
+    this.autoStartNavigation = false,
+  });
 
   @override
   State<MapPage> createState() => _MapPageState();
@@ -29,24 +33,22 @@ class _MapPageState extends State<MapPage> {
   bool _isDriving = true;
   bool _isLoading = true;
   bool _isNavigating = false;
-  bool _followUser = false; // Auto-follow toggle
+  bool _followUser = false;
 
   List<Map<String, dynamic>> _destinations = [];
   List<Map<String, dynamic>> _nearbyDestinations = [];
 
-  // Navigation
   List<LatLng> _routePoints = [];
   Map<String, dynamic>? _currentDestination;
   List<String> _navigationSteps = [];
   int _currentStepIndex = 0;
   double _remainingDistanceKm = 0.0;
 
-  // Preview from bucket list
   List<LatLng> _previewRoutePoints = [];
   bool _showPreviewRoute = false;
 
-  // Offline fallback
-  List<LatLng> _fallbackPoints = [];
+  // Track destination from "Start Navigation" → make it red
+  String? _navigationStartedDestinationId;
 
   StreamSubscription<Position>? _positionStream;
   Timer? _followTimer;
@@ -54,12 +56,58 @@ class _MapPageState extends State<MapPage> {
   final supabase = Supabase.instance.client;
   final _service = SupabaseService();
 
+  static final LatLngBounds _phBounds = LatLngBounds(
+    LatLng(4.5, 116.0),
+    LatLng(21.5, 127.0),
+  );
+
   @override
   void initState() {
     super.initState();
     _loadDestinations();
     _loadPreviewRoute();
     _startLiveLocation();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _mapController.fitCamera(
+        CameraFit.bounds(
+          bounds: _phBounds,
+          padding: const EdgeInsets.all(80),
+        ),
+      );
+
+      // Handle coming from DestinationDetailPage "Start Navigation"
+      if (widget.initialDestination != null) {
+        final dest = widget.initialDestination!;
+        final destId = dest['id']?.toString() ?? '';
+
+        if (destId.isNotEmpty) {
+          setState(() {
+            _navigationStartedDestinationId = destId; // trigger red highlight
+          });
+
+          final lat =
+              double.tryParse(dest['latitude']?.toString() ?? '0') ?? 0.0;
+          final lng =
+              double.tryParse(dest['longitude']?.toString() ?? '0') ?? 0.0;
+
+          if (lat != 0.0 && lng != 0.0) {
+            // Center only – NO zoom change (keeps 11.0 or last zoom)
+            _mapController.move(LatLng(lat, lng), _currentZoom);
+          }
+        }
+
+        // Auto-start navigation if requested from "Start Navigation" button
+        if (widget.autoStartNavigation && _currentPosition != null) {
+          // Small delay to ensure map & location are ready
+          Future.delayed(const Duration(milliseconds: 1200), () {
+            if (mounted) {
+              _startInAppNavigation(widget.initialDestination!);
+            }
+          });
+        }
+      }
+    });
   }
 
   @override
@@ -69,7 +117,6 @@ class _MapPageState extends State<MapPage> {
     super.dispose();
   }
 
-  // ─── Load Destinations ───────────────────────────────────────────────────
   Future<void> _loadDestinations() async {
     try {
       final dests = await _service.getDestinations();
@@ -92,7 +139,7 @@ class _MapPageState extends State<MapPage> {
         });
       }
     } catch (e) {
-      print('Destinations load error: $e');
+      debugPrint('Destinations load error: $e');
       if (mounted) {
         setState(() => _isLoading = false);
         ScaffoldMessenger.of(context).showSnackBar(
@@ -102,7 +149,6 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
-  // ─── Load Bucket List Preview ───────────────────────────────────────────
   Future<void> _loadPreviewRoute() async {
     try {
       final plan = await _service.getTripPlan(widget.currentUserId);
@@ -123,32 +169,18 @@ class _MapPageState extends State<MapPage> {
           _showPreviewRoute = true;
         });
 
-        // 1. Instant fit to bounds (no animation param in v8)
         _mapController.fitCamera(
           CameraFit.bounds(
             bounds: LatLngBounds.fromPoints(points),
             padding: const EdgeInsets.all(80),
           ),
         );
-
-        // 2. Smooth animated zoom-in after fit (using animateTo)
-        Future.delayed(const Duration(milliseconds: 400), () {
-          if (mounted) {
-            final currentCamera = _mapController.camera;
-
-            _mapController.move(
-              _mapController.camera.center,
-              12.0,
-            );
-          }
-        });
       }
     } catch (e) {
-      print('Preview route error: $e');
+      debugPrint('Preview route error: $e');
     }
   }
 
-  // ─── Live Location ───────────────────────────────────────────────────────
   void _startLiveLocation() async {
     LocationPermission perm = await Geolocator.checkPermission();
     if (perm == LocationPermission.denied) {
@@ -216,7 +248,6 @@ class _MapPageState extends State<MapPage> {
     setState(() => _nearbyDestinations = nearby);
   }
 
-  // ─── Start Navigation (optimized zoom + animation) ──────────────────────
   Future<void> _startInAppNavigation(Map<String, dynamic> dest) async {
     if (_currentPosition == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -288,7 +319,6 @@ class _MapPageState extends State<MapPage> {
           _remainingDistanceKm = totalDistKm;
         });
 
-        // 1. Fit bounds instantly (v8 does not support animated fitCamera)
         _mapController.fitCamera(
           CameraFit.bounds(
             bounds:
@@ -296,23 +326,6 @@ class _MapPageState extends State<MapPage> {
             padding: const EdgeInsets.all(100),
           ),
         );
-
-        // 2. Smooth animated zoom-in after fit
-        _mapController.fitCamera(
-          CameraFit.bounds(
-            bounds:
-                LatLngBounds.fromPoints([...routePoints, _currentPosition!]),
-            padding: const EdgeInsets.all(100),
-          ),
-        );
-
-// Manual zoom-in (instant, no smooth animation)
-        Future.delayed(const Duration(milliseconds: 600), () {
-          if (mounted && _isNavigating) {
-            final currentCamera = _mapController.camera;
-            _mapController.move(currentCamera.center, 13.5);
-          }
-        });
 
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -323,15 +336,11 @@ class _MapPageState extends State<MapPage> {
         );
       }
     } catch (e) {
-      print('Navigation error: $e');
+      debugPrint('Navigation error: $e');
       if (mounted) {
         setState(() => _isNavigating = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content:
-                Text("Couldn't load route: ${e.toString().split('\n').first}"),
-            duration: const Duration(seconds: 4),
-          ),
+          SnackBar(content: Text("Couldn't load route: $e")),
         );
       }
     }
@@ -341,61 +350,43 @@ class _MapPageState extends State<MapPage> {
     setState(() {
       _isNavigating = false;
       _routePoints = [];
-      _fallbackPoints = [];
       _navigationSteps = [];
       _currentDestination = null;
       _currentStepIndex = 0;
       _remainingDistanceKm = 0.0;
       _followUser = false;
     });
-    _followTimer?.cancel();
   }
 
   void _updateRemainingDistance() {
-    if (_currentDestination == null ||
-        (_routePoints.isEmpty && _fallbackPoints.isEmpty)) return;
-
-    final points = _routePoints.isNotEmpty ? _routePoints : _fallbackPoints;
+    if (_currentDestination == null || _routePoints.isEmpty) return;
 
     double total = 0.0;
-    for (int i = 1; i < points.length; i++) {
+    for (int i = 1; i < _routePoints.length; i++) {
       total += Geolocator.distanceBetween(
-            points[i - 1].latitude,
-            points[i - 1].longitude,
-            points[i].latitude,
-            points[i].longitude,
+            _routePoints[i - 1].latitude,
+            _routePoints[i - 1].longitude,
+            _routePoints[i].latitude,
+            _routePoints[i].longitude,
           ) /
           1000;
     }
     setState(() => _remainingDistanceKm = total);
   }
 
-  // ─── Auto-follow toggle logic ────────────────────────────────────────────
   void _toggleFollowUser() {
-    setState(() {
-      _followUser = !_followUser;
-    });
+    setState(() => _followUser = !_followUser);
 
-    if (_followUser) {
-      _followTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-        if (mounted && _followUser && _currentPosition != null) {
-          _mapController.move(_currentPosition!, _currentZoom);
-        }
-      });
-    } else {
-      _followTimer?.cancel();
+    if (_followUser && _currentPosition != null) {
+      _mapController.move(_currentPosition!, _currentZoom);
     }
   }
 
-  // ─── Category Helpers ────────────────────────────────────────────────────
   Color _getCategoryColor(String? type) {
     final t = type?.toLowerCase() ?? '';
     if (t.contains('beach')) return Colors.blue;
     if (t.contains('waterfall')) return Colors.cyan;
     if (t.contains('mountain')) return Colors.brown;
-    if (t.contains('view') || t.contains('scenic')) return Colors.orange;
-    if (t.contains('waterpark') || t.contains('adventure'))
-      return Colors.purple;
     return Colors.grey[700]!;
   }
 
@@ -404,23 +395,9 @@ class _MapPageState extends State<MapPage> {
     if (t.contains('beach')) return Icons.beach_access;
     if (t.contains('waterfall')) return Icons.water_drop;
     if (t.contains('mountain')) return Icons.terrain;
-    if (t.contains('view') || t.contains('scenic')) return Icons.panorama;
     return Icons.location_on;
   }
 
-  Widget _buildInfoRow(IconData icon, String text) {
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: Colors.blue),
-        const SizedBox(width: 8),
-        Text(text,
-            style: const TextStyle(
-                fontWeight: FontWeight.w500, color: Colors.grey)),
-      ],
-    );
-  }
-
-  // ─── Destination Bottom Sheet ────────────────────────────────────────────
   void _showLocationDetails(BuildContext context, Map<String, dynamic> data) {
     showModalBottomSheet(
       context: context,
@@ -432,7 +409,9 @@ class _MapPageState extends State<MapPage> {
           decoration: const BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.only(
-                topLeft: Radius.circular(25), topRight: Radius.circular(25)),
+              topLeft: Radius.circular(25),
+              topRight: Radius.circular(25),
+            ),
           ),
           child: Column(
             children: [
@@ -442,11 +421,14 @@ class _MapPageState extends State<MapPage> {
                     height: 250,
                     decoration: BoxDecoration(
                       borderRadius: const BorderRadius.only(
-                          topLeft: Radius.circular(25),
-                          topRight: Radius.circular(25)),
+                        topLeft: Radius.circular(25),
+                        topRight: Radius.circular(25),
+                      ),
                       image: DecorationImage(
-                        image: AssetImage(
-                            data['image_url'] ?? 'assets/images/7seas.jpg'),
+                        image: NetworkImage(
+                          data['image_url'] ??
+                              'https://via.placeholder.com/800x400',
+                        ),
                         fit: BoxFit.cover,
                       ),
                     ),
@@ -459,28 +441,6 @@ class _MapPageState extends State<MapPage> {
                       child: IconButton(
                         icon: const Icon(Icons.arrow_back),
                         onPressed: () => Navigator.pop(ctx),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    top: 20,
-                    right: 20,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.star, color: Colors.amber, size: 18),
-                          const SizedBox(width: 4),
-                          Text(
-                            data['rating']?.toString() ?? '4.5',
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                        ],
                       ),
                     ),
                   ),
@@ -533,9 +493,7 @@ class _MapPageState extends State<MapPage> {
                               fontSize: 18, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 8),
                       Text(
-                        data['description'] ??
-                            data['desc'] ??
-                            'No description available.',
+                        data['description'] ?? 'No description available.',
                         style: TextStyle(color: Colors.grey[700], height: 1.5),
                       ),
                       const SizedBox(height: 24),
@@ -544,26 +502,8 @@ class _MapPageState extends State<MapPage> {
                               fontSize: 16, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 8),
                       Text(
-                        data['accommodation'] ??
-                            'Nearby resorts, homestays, and hotels available (₱1,000–₱4,000/night)',
+                        data['accommodation'] ?? 'Nearby options available',
                         style: TextStyle(color: Colors.grey[700]),
-                      ),
-                      const SizedBox(height: 24),
-                      Row(
-                        children: [
-                          const Icon(Icons.attach_money, color: Colors.green),
-                          const SizedBox(width: 8),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text('Price Range',
-                                  style:
-                                      TextStyle(fontWeight: FontWeight.bold)),
-                              Text(data['price'] ?? 'Varies',
-                                  style: TextStyle(color: Colors.grey[700])),
-                            ],
-                          ),
-                        ],
                       ),
                     ],
                   ),
@@ -681,21 +621,57 @@ class _MapPageState extends State<MapPage> {
     );
   }
 
+  Widget _buildInfoRow(IconData icon, String text) {
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: Colors.blue),
+        const SizedBox(width: 8),
+        Text(text,
+            style: const TextStyle(
+                fontWeight: FontWeight.w500, color: Colors.grey)),
+      ],
+    );
+  }
+
+  // ─── MARKERS: Red color + glow for selected destination (no pin icon) ─────
   List<Marker> _buildMarkers() {
     final markers = <Marker>[];
 
     for (var dest in _nearbyDestinations) {
+      final destId = dest['id']?.toString() ?? '';
+      final isTarget = destId == _navigationStartedDestinationId;
+
+      final color =
+          isTarget ? Colors.redAccent : _getCategoryColor(dest['type']);
+      final size = isTarget ? 40.0 : 40.0;
+
       markers.add(
         Marker(
           point: dest['location'],
-          width: 50,
-          height: 50,
+          width: size + 10,
+          height: size + 10,
           child: GestureDetector(
             onTap: () => _showLocationDetails(context, dest),
-            child: Icon(
-              _getCategoryIcon(dest['type']),
-              color: _getCategoryColor(dest['type']),
-              size: 40,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                // Red glow only for the selected destination
+                if (isTarget)
+                  Container(
+                    width: size * 1.8,
+                    height: size * 1.8,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.red.withOpacity(0.25),
+                    ),
+                  ),
+                Icon(
+                  _getCategoryIcon(
+                      dest['type']), // keep original icon, just make it red
+                  color: color,
+                  size: size,
+                ),
+              ],
             ),
           ),
         ),
@@ -764,11 +740,27 @@ class _MapPageState extends State<MapPage> {
                   child: FlutterMap(
                     mapController: _mapController,
                     options: MapOptions(
-                      initialCenter:
-                          _currentPosition ?? const LatLng(8.55, 124.65),
-                      initialZoom: 10.5,
+                      initialCenter: const LatLng(12.0, 122.0),
+                      initialZoom: _currentZoom,
+                      minZoom: 1.0,
+                      maxZoom: 17.0,
                       onPositionChanged: (MapCamera camera, bool hasGesture) {
-                        if (hasGesture) _currentZoom = camera.zoom;
+                        if (hasGesture) {
+                          if (camera.zoom < 5.5) {
+                            _mapController.move(camera.center, 11.0);
+                          }
+                          if (camera.zoom > 17.0) {
+                            _mapController.move(camera.center, 17.0);
+                          }
+
+                          LatLng clampedCenter = camera.center;
+                          if (!_phBounds.contains(clampedCenter)) {
+                            clampedCenter = _phBounds.center;
+                            _mapController.move(clampedCenter, camera.zoom);
+                          }
+
+                          _currentZoom = camera.zoom;
+                        }
                       },
                     ),
                     children: [
@@ -787,15 +779,11 @@ class _MapPageState extends State<MapPage> {
                             ),
                           ],
                         ),
-                      if (_isNavigating &&
-                          (_routePoints.isNotEmpty ||
-                              _fallbackPoints.isNotEmpty))
+                      if (_isNavigating && _routePoints.isNotEmpty)
                         PolylineLayer(
                           polylines: [
                             Polyline(
-                              points: _routePoints.isNotEmpty
-                                  ? _routePoints
-                                  : _fallbackPoints,
+                              points: _routePoints,
                               color: Colors.blue[700]!,
                               strokeWidth: 6,
                               borderColor: Colors.blue[900]!,
@@ -816,10 +804,11 @@ class _MapPageState extends State<MapPage> {
                       Row(
                         children: [
                           Container(
-                              width: 12,
-                              height: 12,
-                              decoration: const BoxDecoration(
-                                  color: Colors.blue, shape: BoxShape.circle)),
+                            width: 12,
+                            height: 12,
+                            decoration: const BoxDecoration(
+                                color: Colors.blue, shape: BoxShape.circle),
+                          ),
                           const SizedBox(width: 8),
                           const Text('Your Location',
                               style: TextStyle(fontWeight: FontWeight.w500)),
@@ -832,7 +821,6 @@ class _MapPageState extends State<MapPage> {
                 ),
               ],
             ),
-
             if (_isNavigating)
               Positioned(
                 top: 80,
@@ -878,8 +866,6 @@ class _MapPageState extends State<MapPage> {
                   ),
                 ),
               ),
-
-            // Follow Me button (only during navigation)
             if (_isNavigating)
               Positioned(
                 bottom: 100,
@@ -894,7 +880,6 @@ class _MapPageState extends State<MapPage> {
                   onPressed: _toggleFollowUser,
                 ),
               ),
-
             if (_isLoading) const Center(child: CircularProgressIndicator()),
           ],
         ),

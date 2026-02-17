@@ -200,7 +200,7 @@ class _ProfilePageState extends State<ProfilePage> {
                             gradient: LinearGradient(
                               begin: Alignment.topLeft,
                               end: Alignment.bottomRight,
-                              colors: [Color(0xFF651FFF), Color(0xFF4527A0)],
+                              colors: [Color(0xFF1565FF), Color(0xFF651FFF)],
                             ),
                             borderRadius: BorderRadius.only(
                               bottomLeft: Radius.circular(30),

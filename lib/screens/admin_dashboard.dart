@@ -9,7 +9,7 @@ class AdminDashboard extends StatefulWidget {
 }
 
 class _AdminDashboardState extends State<AdminDashboard> {
-  final SupabaseService _service = SupabaseService();
+  late SupabaseService _service;
 
   Map<String, dynamic> _stats = {
     'total_destinations': 0,
@@ -17,28 +17,51 @@ class _AdminDashboardState extends State<AdminDashboard> {
     'total_users': 0,
     'pending_users': 0,
   };
+
+  List<Map<String, dynamic>> _recentDestinations = [];
+
   bool _isLoading = true;
+  bool _isLoadingDestinations = false;
 
   @override
   void initState() {
     super.initState();
-    _loadStats();
+    _service = SupabaseService();
+    _loadData();
   }
 
-  Future<void> _loadStats() async {
-    setState(() => _isLoading = true);
+  Future<void> _loadData() async {
+    setState(() {
+      _isLoading = true;
+      _isLoadingDestinations = true;
+    });
+
     try {
+      // Load stats
       final stats = await _service.getAdminStats();
+
+      // Load recent destinations
+      final destinations = await _service.getRecentDestinations(limit: 5);
+
+      if (!mounted) return;
+
       setState(() {
         _stats = stats;
+        _recentDestinations = destinations;
         _isLoading = false;
+        _isLoadingDestinations = false;
       });
     } catch (e) {
-      setState(() => _isLoading = false);
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _isLoadingDestinations = false;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-            content: Text('Error loading stats: $e'),
-            backgroundColor: Colors.red),
+          content: Text('Error loading dashboard data: $e'),
+          backgroundColor: Colors.red,
+        ),
       );
     }
   }
@@ -50,7 +73,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Sidebar
+          // Sidebar (unchanged)
           _buildSideNavigationBar(context),
 
           // Main Content
@@ -70,15 +93,15 @@ class _AdminDashboardState extends State<AdminDashboard> {
                   ),
                   const SizedBox(height: 30),
 
-                  // Statistics Cards (real data or loading)
+                  // Statistics Cards
                   if (_isLoading)
                     const Center(child: CircularProgressIndicator())
                   else
                     _buildStatisticsCards(),
 
-                  const SizedBox(height: 30),
+                  const SizedBox(height: 40),
 
-                  // Recent Destinations Section (still dummy for now)
+                  // Recent Destinations Section - NOW REAL
                   const Text(
                     'Recent Destinations',
                     style: TextStyle(
@@ -87,8 +110,14 @@ class _AdminDashboardState extends State<AdminDashboard> {
                       color: Color(0xFF1B2559),
                     ),
                   ),
-                  const SizedBox(height: 20),
-                  _buildRecentDestinationsList(),
+                  const SizedBox(height: 16),
+
+                  if (_isLoadingDestinations)
+                    const Center(child: CircularProgressIndicator())
+                  else if (_recentDestinations.isEmpty)
+                    _buildEmptyDestinations()
+                  else
+                    _buildRecentDestinationsList(),
                 ],
               ),
             ),
@@ -183,7 +212,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 
   // ────────────────────────────────────────────────
-  //  REAL STATISTICS CARDS (from Supabase)
+  //  STATISTICS CARDS (unchanged)
   // ────────────────────────────────────────────────
   Widget _buildStatisticsCards() {
     return Row(
@@ -290,7 +319,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 
   // ────────────────────────────────────────────────
-  //  RECENT DESTINATIONS (still dummy - can connect to Supabase later)
+  //  REAL RECENT DESTINATIONS
   // ────────────────────────────────────────────────
   Widget _buildRecentDestinationsList() {
     return Container(
@@ -307,104 +336,129 @@ class _AdminDashboardState extends State<AdminDashboard> {
       ),
       padding: const EdgeInsets.all(10),
       child: Column(
-        children: [
-          _buildDestinationItem(
-            imageUrl: 'https://via.placeholder.com/60',
-            title: 'White Island Sandbar',
-            category: 'Beach',
-          ),
-          _buildDivider(),
-          _buildDestinationItem(
-            imageUrl: 'https://via.placeholder.com/60',
-            title: 'Tinago Falls',
-            category: 'Waterfall',
-          ),
-          _buildDivider(),
-          _buildDestinationItem(
-            imageUrl: 'https://via.placeholder.com/60',
-            title: 'Mt. Malindang Range',
-            category: 'Mountain',
-          ),
-          // Add more if needed
-        ],
+        children: _recentDestinations.asMap().entries.map((entry) {
+          final index = entry.key;
+          final dest = entry.value;
+
+          final imageUrl = dest['image_url'] ??
+              dest['image'] ??
+              'https://via.placeholder.com/60';
+          final title = dest['name'] ?? 'Unnamed Destination';
+          final category = dest['category'] ?? 'Uncategorized';
+          final status = (dest['status'] ?? 'active').toString().toLowerCase();
+          final isActive = status == 'active';
+
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.network(
+                        imageUrl,
+                        width: 50,
+                        height: 50,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          width: 50,
+                          height: 50,
+                          color: Colors.grey[300],
+                          child: const Icon(Icons.broken_image,
+                              color: Colors.grey),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF1B2559),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            category,
+                            style: TextStyle(
+                              color: Colors.grey[500],
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: isActive
+                            ? Colors.green.withOpacity(0.1)
+                            : Colors.red.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        isActive ? 'Active' : 'Inactive',
+                        style: TextStyle(
+                          color: isActive ? Colors.green : Colors.red,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (index < _recentDestinations.length - 1)
+                Divider(
+                  height: 1,
+                  color: Colors.grey[200],
+                  indent: 70,
+                  endIndent: 20,
+                ),
+            ],
+          );
+        }).toList(),
       ),
     );
   }
 
-  Widget _buildDestinationItem({
-    required String imageUrl,
-    required String title,
-    required String category,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.all(12.0),
-      child: Row(
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: Image.network(
-              imageUrl,
-              width: 50,
-              height: 50,
-              fit: BoxFit.cover,
-              errorBuilder: (context, error, stackTrace) => Container(
-                width: 50,
-                height: 50,
-                color: Colors.grey[300],
-                child: const Icon(Icons.broken_image, color: Colors.grey),
-              ),
-            ),
+  Widget _buildEmptyDestinations() {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 40),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
           ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF1B2559),
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  category,
-                  style: TextStyle(
-                    color: Colors.grey[500],
-                    fontSize: 13,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: Colors.green.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: const Text(
-              'Active',
+        ],
+      ),
+      child: const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.location_off_outlined, size: 48, color: Colors.grey),
+            SizedBox(height: 16),
+            Text(
+              'No destinations added yet',
               style: TextStyle(
-                color: Colors.green,
-                fontWeight: FontWeight.bold,
-                fontSize: 12,
+                fontSize: 16,
+                color: Colors.grey,
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
-    );
-  }
-
-  Widget _buildDivider() {
-    return Divider(
-      height: 1,
-      color: Colors.grey[200],
-      indent: 70,
-      endIndent: 20,
     );
   }
 }

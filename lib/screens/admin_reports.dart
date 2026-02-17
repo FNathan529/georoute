@@ -4,6 +4,7 @@ import 'package:file_saver/file_saver.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:excel/excel.dart' hide Border;
+import '../services/supabase_service.dart'; // Make sure this path is correct
 
 class AdminReportsPage extends StatefulWidget {
   const AdminReportsPage({Key? key}) : super(key: key);
@@ -13,108 +14,114 @@ class AdminReportsPage extends StatefulWidget {
 }
 
 class _AdminReportsPageState extends State<AdminReportsPage> {
-  // 1. DATA
-  final List<Map<String, dynamic>> _summaryData = [
-    {
-      'title': 'Total Destinations',
-      'value': '10',
-      'subtitle': 'Across 6 categories',
-      'icon': Icons.location_on_outlined
-    },
-    {
-      'title': 'Total Users',
-      'value': '8',
-      'subtitle': '7 active',
-      'icon': Icons.people_outline
-    },
-    {
-      'title': 'Avg Rating',
-      'value': '4.3',
-      'subtitle': 'Across all destinations',
-      'icon': Icons.trending_up
-    },
-    {
-      'title': 'Monthly Visits',
-      'value': 'daghan',
-      'subtitle': '+100 from last month',
-      'icon': Icons.remove_red_eye_outlined
-    },
-  ];
+  late SupabaseService _service;
 
-  final List<Map<String, dynamic>> _categoryStats = [
-    {
-      'category': 'Category',
-      'destinations': 'Destinations',
-      'rating': 'Avr Rating'
-    },
-    {'category': 'Beach', 'destinations': 2, 'rating': 4.1},
-    {'category': 'Waterfall', 'destinations': 4, 'rating': 4.3},
-    {'category': 'Mountain', 'destinations': 2, 'rating': 4.2},
-    {'category': 'Cultural', 'destinations': 1, 'rating': 4.3},
-    {'category': 'Nature', 'destinations': 1, 'rating': 4.5},
-    {'category': 'Scenic', 'destinations': 1, 'rating': 4.1},
-  ];
+  Map<String, dynamic> _summaryStats = {};
+  List<Map<String, dynamic>> _categoryStats = [];
 
-  // 2. GENERATE FILE CONTENT
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _service = SupabaseService();
+    _loadReportData();
+  }
+
+  Future<void> _loadReportData() async {
+    setState(() => _isLoading = true);
+
+    try {
+      final stats = await _service.getReportStats();
+      final categories = await _service.getCategoryStats();
+
+      if (!mounted) return;
+
+      setState(() {
+        _summaryStats = stats;
+        _categoryStats = categories;
+        _isLoading = false;
+      });
+    } catch (e) {
+      debugPrint('Error loading report data: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to load report: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      setState(() => _isLoading = false);
+    }
+  }
+
+  // ────────────────────────────────────────────────
+  //  GENERATE REPORT BYTES – NOW WITH REAL DATA
+  // ────────────────────────────────────────────────
   Future<Uint8List> _generateReportBytes(String format) async {
     final timestamp = DateTime.now().toString();
 
     if (format == 'Excel') {
-      // --- REAL EXCEL GENERATION ---
       var excel = Excel.createExcel();
-
-      // Rename the default sheet
       Sheet sheet = excel['GeoRoute Report'];
       excel.setDefaultSheet('GeoRoute Report');
 
-      // Add Title & Time
       sheet.appendRow([TextCellValue('GeoRoute Analytics Report')]);
       sheet.appendRow([TextCellValue('Generated: $timestamp')]);
-      sheet.appendRow([TextCellValue('')]); // Empty row
+      sheet.appendRow([TextCellValue('')]);
 
-      // -- Summary Section --
+      // Summary
       sheet.appendRow([TextCellValue('SUMMARY STATISTICS')]);
       sheet.appendRow([
         TextCellValue('Metric'),
         TextCellValue('Value'),
         TextCellValue('Details')
-      ]); // Headers
+      ]);
 
-      for (var data in _summaryData) {
-        sheet.appendRow([
-          TextCellValue(data['title']),
-          TextCellValue(data['value']),
-          TextCellValue(data['subtitle'])
-        ]);
-      }
+      sheet.appendRow([
+        TextCellValue('Total Destinations'),
+        IntCellValue(_summaryStats['total_destinations'] ?? 0),
+        TextCellValue('${_summaryStats['active_destinations'] ?? 0} active'),
+      ]);
+      sheet.appendRow([
+        TextCellValue('Total Users'),
+        IntCellValue(_summaryStats['total_users'] ?? 0),
+        TextCellValue('${_summaryStats['pending_users'] ?? 0} pending'),
+      ]);
+      sheet.appendRow([
+        TextCellValue('Average Rating'),
+        TextCellValue(_summaryStats['avg_rating'] ?? '0.0'),
+        TextCellValue('Across all destinations'),
+      ]);
+      sheet.appendRow([
+        TextCellValue('Monthly Visits'),
+        TextCellValue(_summaryStats['monthly_visits'] ?? 'N/A'),
+        TextCellValue(''),
+      ]);
 
       sheet.appendRow([TextCellValue('')]);
 
-      // -- Category Section --
+      // Categories
       sheet.appendRow([TextCellValue('CATEGORY STATISTICS')]);
       sheet.appendRow([
         TextCellValue('Category'),
         TextCellValue('Destinations'),
         TextCellValue('Avg Rating')
-      ]); // Headers
+      ]);
 
-      for (var stat in _categoryStats) {
+      for (var stat in _categoryStats.skip(1)) {
         sheet.appendRow([
-          TextCellValue(stat['category']),
-          stat['destinations'] is int
-              ? IntCellValue(stat['destinations'])
-              : TextCellValue(stat['destinations'].toString()),
-          stat['rating'] is double
-              ? DoubleCellValue(stat['rating'])
-              : TextCellValue(stat['rating'].toString())
+          TextCellValue(stat['category'].toString()),
+          IntCellValue(stat['destinations'] ?? 0),
+          TextCellValue(stat['rating'].toString()),
         ]);
       }
 
-      // Save and return bytes
       var fileBytes = excel.save();
       return Uint8List.fromList(fileBytes!);
     } else {
-      // --- REAL PDF GENERATION ---
+      // PDF
       final pdf = pw.Document();
       pdf.addPage(
         pw.Page(
@@ -124,32 +131,52 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
                 pw.Header(
-                    level: 0,
-                    child: pw.Text('GeoRoute Analytics Report',
-                        style: pw.TextStyle(
-                            fontSize: 24, fontWeight: pw.FontWeight.bold))),
+                  level: 0,
+                  child: pw.Text(
+                    'GeoRoute Analytics Report',
+                    style: pw.TextStyle(
+                        fontSize: 24, fontWeight: pw.FontWeight.bold),
+                  ),
+                ),
                 pw.Text('Generated: $timestamp'),
                 pw.SizedBox(height: 20),
-                pw.Text('SUMMARY STATISTICS',
-                    style: pw.TextStyle(
-                        fontSize: 18, fontWeight: pw.FontWeight.bold)),
+                pw.Text(
+                  'SUMMARY STATISTICS',
+                  style: pw.TextStyle(
+                      fontSize: 18, fontWeight: pw.FontWeight.bold),
+                ),
                 pw.Divider(),
-                ..._summaryData.map((data) => pw.Bullet(
-                    text:
-                        "${data['title']}: ${data['value']} (${data['subtitle']})")),
+                pw.Bullet(
+                  text:
+                      'Total Destinations: ${_summaryStats['total_destinations'] ?? 0} (${_summaryStats['active_destinations'] ?? 0} active)',
+                ),
+                pw.Bullet(
+                  text:
+                      'Total Users: ${_summaryStats['total_users'] ?? 0} (${_summaryStats['pending_users'] ?? 0} pending)',
+                ),
+                pw.Bullet(
+                  text:
+                      'Average Rating: ${_summaryStats['avg_rating'] ?? '0.0'}',
+                ),
+                pw.Bullet(
+                  text:
+                      'Monthly Visits: ${_summaryStats['monthly_visits'] ?? 'N/A'}',
+                ),
                 pw.SizedBox(height: 20),
-                pw.Text('CATEGORY STATISTICS',
-                    style: pw.TextStyle(
-                        fontSize: 18, fontWeight: pw.FontWeight.bold)),
+                pw.Text(
+                  'CATEGORY STATISTICS',
+                  style: pw.TextStyle(
+                      fontSize: 18, fontWeight: pw.FontWeight.bold),
+                ),
                 pw.Divider(),
                 pw.Table.fromTextArray(
                   context: context,
                   data: <List<String>>[
-                    <String>['Category', 'Destinations', 'Rating'],
+                    ['Category', 'Destinations', 'Avg Rating'],
                     ..._categoryStats.skip(1).map((item) => [
                           item['category'].toString(),
                           item['destinations'].toString(),
-                          item['rating'].toString()
+                          item['rating'].toString(),
                         ]),
                   ],
                 ),
@@ -162,7 +189,9 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
     }
   }
 
-  // 3. EXPORT FUNCTION
+  // ────────────────────────────────────────────────
+  //  EXPORT FUNCTION
+  // ────────────────────────────────────────────────
   Future<void> _performExport(String format, BuildContext ctx) async {
     try {
       Navigator.pop(ctx);
@@ -173,25 +202,13 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
             duration: const Duration(seconds: 2)),
       );
 
-      // 1. Generate Bytes
       Uint8List fileBytes = await _generateReportBytes(format);
 
-      // 2. Define MimeType & Extension
-      MimeType mimeType;
-      String ext;
-
-      if (format == 'Excel') {
-        mimeType = MimeType.microsoftExcel;
-        ext = 'xlsx';
-      } else {
-        // Default to PDF
-        mimeType = MimeType.pdf;
-        ext = 'pdf';
-      }
-
+      MimeType mimeType =
+          format == 'Excel' ? MimeType.microsoftExcel : MimeType.pdf;
+      String ext = format == 'Excel' ? 'xlsx' : 'pdf';
       String name = 'GeoRoute_Report_${DateTime.now().millisecondsSinceEpoch}';
 
-      // 3. Save File
       await FileSaver.instance.saveFile(
         name: name,
         bytes: fileBytes,
@@ -210,7 +227,8 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
       print(e);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          SnackBar(
+              content: Text('Export failed: $e'), backgroundColor: Colors.red),
         );
       }
     }
@@ -232,9 +250,13 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
                 children: [
                   _buildHeader(),
                   const SizedBox(height: 30),
-                  _buildSummaryCards(),
-                  const SizedBox(height: 30),
-                  _buildCategoryStats(),
+                  if (_isLoading)
+                    const Center(child: CircularProgressIndicator())
+                  else ...[
+                    _buildSummaryCards(),
+                    const SizedBox(height: 30),
+                    _buildCategoryStats(),
+                  ],
                 ],
               ),
             ),
@@ -243,6 +265,132 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
       ),
     );
   }
+
+  // ────────────────────────────────────────────────
+  //  UI WIDGETS – USING REAL DATA
+  // ────────────────────────────────────────────────
+  Widget _buildSummaryCards() {
+    final cards = [
+      {
+        'title': 'Total Destinations',
+        'value': '${_summaryStats['total_destinations'] ?? 0}',
+        'subtitle': '${_summaryStats['active_destinations'] ?? 0} active',
+        'icon': Icons.location_on_outlined,
+      },
+      {
+        'title': 'Total Users',
+        'value': '${_summaryStats['total_users'] ?? 0}',
+        'subtitle': '${_summaryStats['pending_users'] ?? 0} pending',
+        'icon': Icons.people_outline,
+      },
+      {
+        'title': 'Avg Rating',
+        'value': _summaryStats['avg_rating'] ?? '0.0',
+        'subtitle': 'Across all destinations',
+        'icon': Icons.trending_up,
+      },
+      {
+        'title': 'Monthly Visits',
+        'value': _summaryStats['monthly_visits'] ?? 'N/A',
+        'subtitle': 'This month',
+        'icon': Icons.remove_red_eye_outlined,
+      },
+    ];
+
+    return Row(
+      children: cards.map((data) {
+        return Expanded(
+          child: Container(
+            margin: const EdgeInsets.only(right: 20),
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(data['title'], style: const TextStyle(color: Colors.grey)),
+                Text(
+                  data['value'],
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1B2559),
+                  ),
+                ),
+                Text(data['subtitle'], style: const TextStyle(fontSize: 12)),
+              ],
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildCategoryStats() {
+    if (_categoryStats.isEmpty || _categoryStats.length <= 1) {
+      return Container(
+        padding: const EdgeInsets.all(40),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: const Center(
+          child: Text(
+            'No category data available yet',
+            style: TextStyle(color: Colors.grey, fontSize: 16),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      padding: const EdgeInsets.all(25),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Category Statistics',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 20),
+          ..._categoryStats.map((stat) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12.0),
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: 3,
+                    child: Text(
+                      stat['category'].toString(),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  Expanded(
+                    flex: 1,
+                    child: Text(stat['destinations'].toString()),
+                  ),
+                  Expanded(
+                    flex: 1,
+                    child: Text(stat['rating'].toString()),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  // ────────────────────────────────────────────────
+  //  SIDEBAR, HEADER, DIALOG – unchanged from your code
+  // ────────────────────────────────────────────────
 
   Widget _buildSideNavigationBar(BuildContext context) {
     return Container(
@@ -269,8 +417,6 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
             ),
           ),
           const SizedBox(height: 50),
-
-          // Navigation Items
           _buildSideNavItem(
               context, Icons.grid_view, 'Dashboard', '/AdminDashboard', false),
           _buildSideNavItem(context, Icons.place, 'Destinations',
@@ -282,7 +428,6 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
           _buildSideNavItem(
               context, Icons.description, 'Reports', '/AdminReports', true),
           const Spacer(),
-
           _buildSideNavItem(context, Icons.logout, 'Logout', '/', false,
               isLogout: true),
         ],
@@ -368,17 +513,11 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
               const Text('Export Report',
                   style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
               const Divider(height: 24),
-
-              // OPTION 1: PDF
               _buildExportOption(ctx, Icons.picture_as_pdf, 'Export as PDF',
                   () => _performExport('PDF', ctx)),
-
               const SizedBox(height: 12),
-
-              // OPTION 2: EXCEL
               _buildExportOption(ctx, Icons.description, 'Export as Excel',
                   () => _performExport('Excel', ctx)),
-
               const SizedBox(height: 24),
               Align(
                   alignment: Alignment.centerRight,
@@ -409,62 +548,6 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
                   style: const TextStyle(fontWeight: FontWeight.bold))),
           const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
         ]),
-      ),
-    );
-  }
-
-  Widget _buildSummaryCards() {
-    return Row(
-      children: _summaryData
-          .map((data) => Expanded(
-                  child: Container(
-                margin: const EdgeInsets.only(right: 20),
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(20)),
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(data['title'],
-                          style: const TextStyle(color: Colors.grey)),
-                      Text(data['value'],
-                          style: const TextStyle(
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF1B2559))),
-                      Text(data['subtitle'],
-                          style: const TextStyle(fontSize: 12)),
-                    ]),
-              )))
-          .toList(),
-    );
-  }
-
-  Widget _buildCategoryStats() {
-    return Container(
-      decoration: BoxDecoration(
-          color: Colors.white, borderRadius: BorderRadius.circular(20)),
-      padding: const EdgeInsets.all(25),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('Category Statistics',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 20),
-          ..._categoryStats.map((stat) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12.0),
-                child: Row(children: [
-                  Expanded(
-                      flex: 3,
-                      child: Text(stat['category'].toString(),
-                          style: const TextStyle(fontWeight: FontWeight.bold))),
-                  Expanded(
-                      flex: 1, child: Text(stat['destinations'].toString())),
-                  Expanded(flex: 1, child: Text(stat['rating'].toString())),
-                ]),
-              )),
-        ],
       ),
     );
   }

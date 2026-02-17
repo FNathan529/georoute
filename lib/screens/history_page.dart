@@ -1,6 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_application_1/screens/destination_detail.dart';
 import 'package:intl/intl.dart';
 import '../services/supabase_service.dart';
+import 'destination_detail.dart'; // ← Import your detail page here
+import 'home_page.dart'; // if needed
 
 class HistoryPage extends StatefulWidget {
   final String currentUserId;
@@ -57,8 +61,8 @@ class _HistoryPageState extends State<HistoryPage> {
           // Scrollable content with pull-to-refresh
           Expanded(
             child: RefreshIndicator(
-              onRefresh: _loadHistory, // Swipe down to refresh
-              color: const Color(0xFFAA00FF),
+              onRefresh: _loadHistory,
+              color: const Color(0xFF1565FF),
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(20, 50, 20, 20),
                 physics: const BouncingScrollPhysics(),
@@ -125,7 +129,37 @@ class _HistoryPageState extends State<HistoryPage> {
                       ),
                     )
                   else
-                    ..._history.map((item) => _buildHistoryCard(item)).toList(),
+                    ..._history.map((item) {
+                      return GestureDetector(
+                        onTap: () {
+                          // Navigate to DestinationDetailPage on tap
+                          final destinationData = {
+                            'id': item['destination_id'],
+                            'name': item['destination_name'],
+                            'category': item['category'] ?? 'Unknown',
+                            'image_url': item['image_url'] ??
+                                'https://via.placeholder.com/400x225',
+                            'latitude': item['latitude'],
+                            'longitude': item['longitude'],
+                            'description': item['description'] ??
+                                'No description available.',
+                            // Add more fields if available in travel_history
+                            // or fetch full data using ID if needed
+                          };
+
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => DestinationDetailPage(
+                                destination: destinationData,
+                                currentUserId: widget.currentUserId,
+                              ),
+                            ),
+                          );
+                        },
+                        child: _buildHistoryCard(item),
+                      );
+                    }).toList(),
                 ],
               ),
             ),
@@ -145,7 +179,7 @@ class _HistoryPageState extends State<HistoryPage> {
           width: double.infinity,
           height: 200,
           decoration: const BoxDecoration(
-            color: Color(0xFFAA00FF),
+            color: Color(0xFF0000FF),
             borderRadius: BorderRadius.only(
               bottomLeft: Radius.circular(30),
               bottomRight: Radius.circular(30),
@@ -160,11 +194,6 @@ class _HistoryPageState extends State<HistoryPage> {
                 children: [
                   Row(
                     children: [
-                      GestureDetector(
-                        onTap: () => Navigator.maybePop(context),
-                        child: const Icon(Icons.arrow_back,
-                            color: Colors.white, size: 24),
-                      ),
                       const SizedBox(width: 10),
                       const Icon(Icons.history, color: Colors.white, size: 28),
                       const SizedBox(width: 10),
@@ -231,7 +260,7 @@ class _HistoryPageState extends State<HistoryPage> {
         Text(
           count,
           style: const TextStyle(
-            color: Color(0xFFAA00FF),
+            color: Color.fromARGB(255, 0, 0, 0),
             fontSize: 22,
             fontWeight: FontWeight.bold,
           ),
@@ -270,9 +299,9 @@ class _HistoryPageState extends State<HistoryPage> {
     final rating = (item['rating_given'] as num?)?.toDouble() ?? 0.0;
 
     final formattedDate = dateStr != null
-        ? DateFormat('MMM dd, yyyy').format(DateTime.parse(dateStr))
+        ? DateFormat('MMM dd, yyyy • h:mm a')
+            .format(DateTime.parse(dateStr).toLocal()) // ← same fix here
         : 'Unknown date';
-
     return Container(
       margin: const EdgeInsets.only(bottom: 15),
       padding: const EdgeInsets.all(12),

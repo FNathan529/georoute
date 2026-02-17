@@ -9,9 +9,8 @@ class AdminUsersPage extends StatefulWidget {
 }
 
 class _AdminUsersPageState extends State<AdminUsersPage> {
-  final SupabaseService _service = SupabaseService();
-
-  String _searchQuery = '';
+  late SupabaseService _service;
+  late String _searchQuery = '';
   String _sortOption = 'Name (A-Z)';
 
   final List<String> _sortOptions = [
@@ -27,6 +26,7 @@ class _AdminUsersPageState extends State<AdminUsersPage> {
   @override
   void initState() {
     super.initState();
+    _service = SupabaseService();
     _loadUsers();
   }
 

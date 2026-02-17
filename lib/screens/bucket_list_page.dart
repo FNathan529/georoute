@@ -1,18 +1,23 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_application_1/screens/destination_detail.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../utils/distance_calculator.dart';
 import '../services/supabase_service.dart';
-import 'home_page.dart';
+import 'destination_detail.dart'; // ← Make sure this import exists
+import 'home_page.dart'; // if needed for navigation
 
 class BucketListPage extends StatefulWidget {
   final String currentUserId;
   final Map<String, dynamic>? initialLocation;
 
   const BucketListPage({
-    Key? key,
+    super.key,
     required this.currentUserId,
     this.initialLocation,
-  }) : super(key: key);
+  });
 
   @override
   State<BucketListPage> createState() => _BucketListPageState();
@@ -23,21 +28,24 @@ class _BucketListPageState extends State<BucketListPage>
   final SupabaseService _service = SupabaseService();
   List<Map<String, dynamic>> _bucketList = [];
   bool _isLoading = true;
+  bool _isSaving = false;
 
-  // We'll check visited status from travel_history
-  Set<String> _visitedIds = {}; // Cache visited destination_ids
+  // Visited status cache
+  Set<String> _visitedIds = {};
 
   double get completionPercentage {
     if (_bucketList.isEmpty) return 0.0;
     final visitedCount = _bucketList
-        .where((item) => _visitedIds.contains(item['destination_id']))
+        .where(
+            (item) => _visitedIds.contains(item['destination_id'].toString()))
         .length;
     return visitedCount / _bucketList.length;
   }
 
   String get totalVisited {
     final count = _bucketList
-        .where((item) => _visitedIds.contains(item['destination_id']))
+        .where(
+            (item) => _visitedIds.contains(item['destination_id'].toString()))
         .length;
     return '$count/${_bucketList.length}';
   }
@@ -47,7 +55,7 @@ class _BucketListPageState extends State<BucketListPage>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadBucketList();
-    _loadVisitedIds(); // NEW: load visited status
+    _loadVisitedIds();
 
     if (widget.initialLocation != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -60,7 +68,7 @@ class _BucketListPageState extends State<BucketListPage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _loadBucketList();
-      _loadVisitedIds(); // Refresh visited status when returning
+      _loadVisitedIds();
     }
   }
 
@@ -70,7 +78,6 @@ class _BucketListPageState extends State<BucketListPage>
     super.dispose();
   }
 
-  // NEW: Load visited destination IDs from travel_history
   Future<void> _loadVisitedIds() async {
     try {
       final user = Supabase.instance.client.auth.currentUser;
@@ -86,7 +93,7 @@ class _BucketListPageState extends State<BucketListPage>
             res.map((row) => row['destination_id'].toString()).toSet();
       });
     } catch (e) {
-      print('Error loading visited IDs: $e');
+      debugPrint('Error loading visited IDs: $e');
     }
   }
 
@@ -98,10 +105,7 @@ class _BucketListPageState extends State<BucketListPage>
       final data = await _service.getTripPlan(widget.currentUserId);
       if (mounted) {
         setState(() {
-          _bucketList = data.map((item) {
-            // No need to set 'visited' anymore – we check via _visitedIds
-            return item;
-          }).toList();
+          _bucketList = List<Map<String, dynamic>>.from(data);
           _isLoading = false;
         });
       }
@@ -134,11 +138,18 @@ class _BucketListPageState extends State<BucketListPage>
       'type': data['type'] ?? 'Unknown',
       'distance': data['distance'] ?? 'N/A',
       'duration': data['duration'] ?? 'N/A',
-      'cost': data['price'] ?? '₱ – ',
-      'image': data['image_url'] ?? 'https://via.placeholder.com/400x200',
+      'cost': data['cost'] ?? data['price_range'] ?? '₱ – ',
+      'image': data['image_url'] ??
+          data['image'] ??
+          'https://via.placeholder.com/400x225',
       'latitude': data['latitude'],
       'longitude': data['longitude'],
       'order_index': _bucketList.length,
+      // Add more fields if your DestinationDetailPage needs them
+      'description': data['description'],
+      'attractions': data['attractions'],
+      'activities': data['activities'],
+      'accommodation': data['accommodation'],
     };
 
     setState(() => _bucketList.add(newItem));
@@ -150,10 +161,9 @@ class _BucketListPageState extends State<BucketListPage>
         orderIndex: _bucketList.length - 1,
       );
 
-      await _loadBucketList(); // Refresh list
+      await _loadBucketList();
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('${newItem['name']} added to your bucket list!')),
+        SnackBar(content: Text('${newItem['name']} added to bucket list!')),
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -167,13 +177,12 @@ class _BucketListPageState extends State<BucketListPage>
   Future<void> _markAsVisited(int index) async {
     final item = _bucketList[index];
 
-    // Already visited? (check via history)
-    if (_visitedIds.contains(item['destination_id'])) return;
+    if (_visitedIds.contains(item['destination_id'].toString())) return;
 
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please log in to mark as visited')),
+        const SnackBar(content: Text('Log in to mark as visited')),
       );
       return;
     }
@@ -187,7 +196,6 @@ class _BucketListPageState extends State<BucketListPage>
         rating: null,
       );
 
-      // Update local cache & UI
       setState(() {
         _visitedIds.add(item['destination_id'].toString());
       });
@@ -249,7 +257,6 @@ class _BucketListPageState extends State<BucketListPage>
     );
   }
 
-  // ─── UI ──────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final top = MediaQuery.of(context).padding.top;
@@ -265,7 +272,7 @@ class _BucketListPageState extends State<BucketListPage>
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                colors: [Color(0xFF651FFF), Color(0xFF7C4DFF)],
+                colors: [Color(0xFF1565FF), Color(0xFF0000FF)],
               ),
               borderRadius: const BorderRadius.only(
                 bottomLeft: Radius.circular(32),
@@ -277,11 +284,6 @@ class _BucketListPageState extends State<BucketListPage>
               children: [
                 Row(
                   children: [
-                    InkWell(
-                      onTap: () => Navigator.pop(context),
-                      child: const Icon(Icons.arrow_back,
-                          color: Colors.white, size: 28),
-                    ),
                     const SizedBox(width: 16),
                     const Icon(Icons.favorite_border,
                         color: Colors.white, size: 28),
@@ -334,141 +336,171 @@ class _BucketListPageState extends State<BucketListPage>
                               final isVisited = _visitedIds
                                   .contains(item['destination_id'].toString());
 
-                              return Dismissible(
-                                key: ValueKey(
-                                    '${item['destination_id'] ?? ''}_${item['name'] ?? ''}_$index'),
-                                direction: DismissDirection.endToStart,
-                                background: Container(
-                                  color: Colors.redAccent,
-                                  alignment: Alignment.centerRight,
-                                  padding: const EdgeInsets.only(right: 24),
-                                  child: const Icon(Icons.delete,
-                                      color: Colors.white),
-                                ),
-                                onDismissed: (direction) {
-                                  _removeAt(index);
+                              return GestureDetector(
+                                onTap: () {
+                                  // Navigate to DestinationDetailPage
+                                  final destinationData = {
+                                    'id': item['destination_id'],
+                                    'name': item['name'],
+                                    'category': item['type'] ?? 'Unknown',
+                                    'image_url': item['image'],
+                                    'latitude': item['latitude'],
+                                    'longitude': item['longitude'],
+                                    'description': item['description'] ??
+                                        'No description available.',
+                                    // Add more fields if available in your trip_plans table
+                                    // or fetch full data if needed
+                                  };
+
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) =>
+                                          DestinationDetailPage(
+                                        destination: destinationData,
+                                        currentUserId: widget.currentUserId,
+                                      ),
+                                    ),
+                                  );
                                 },
-                                child: Card(
-                                  margin: const EdgeInsets.only(bottom: 16),
-                                  shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(20)),
-                                  elevation: 3,
-                                  clipBehavior: Clip.antiAlias,
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      AspectRatio(
-                                        aspectRatio: 16 / 9,
-                                        child: Stack(
-                                          fit: StackFit.expand,
-                                          children: [
-                                            Image.network(
-                                              item['image'] ??
-                                                  'https://via.placeholder.com/400x225',
-                                              fit: BoxFit.cover,
-                                              errorBuilder: (_, __, ___) =>
-                                                  Container(
-                                                color: Colors.grey[300],
-                                                child: const Icon(
-                                                    Icons.image_not_supported,
-                                                    size: 60,
-                                                    color: Colors.grey),
-                                              ),
-                                            ),
-                                            if (isVisited)
-                                              Container(
-                                                color: Colors.black
-                                                    .withOpacity(0.5),
-                                                child: const Center(
-                                                  child: Icon(
-                                                      Icons.check_circle,
-                                                      size: 80,
-                                                      color: Colors.white70),
+                                child: Dismissible(
+                                  key: ValueKey(
+                                      '${item['destination_id'] ?? ''}_${item['name'] ?? ''}_$index'),
+                                  direction: DismissDirection.endToStart,
+                                  background: Container(
+                                    color: Colors.redAccent,
+                                    alignment: Alignment.centerRight,
+                                    padding: const EdgeInsets.only(right: 24),
+                                    child: const Icon(Icons.delete,
+                                        color: Colors.white),
+                                  ),
+                                  onDismissed: (direction) => _removeAt(index),
+                                  child: Card(
+                                    margin: const EdgeInsets.only(bottom: 16),
+                                    shape: RoundedRectangleBorder(
+                                        borderRadius:
+                                            BorderRadius.circular(20)),
+                                    elevation: 3,
+                                    clipBehavior: Clip.antiAlias,
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        AspectRatio(
+                                          aspectRatio: 16 / 9,
+                                          child: Stack(
+                                            fit: StackFit.expand,
+                                            children: [
+                                              Image.network(
+                                                item['image'] ??
+                                                    'https://via.placeholder.com/400x225',
+                                                fit: BoxFit.cover,
+                                                errorBuilder: (_, __, ___) =>
+                                                    Container(
+                                                  color: Colors.grey[300],
+                                                  child: const Icon(
+                                                      Icons.image_not_supported,
+                                                      size: 60,
+                                                      color: Colors.grey),
                                                 ),
                                               ),
-                                          ],
-                                        ),
-                                      ),
-                                      Padding(
-                                        padding: const EdgeInsets.all(16),
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              item['name'] ?? 'Dream Spot',
-                                              style: TextStyle(
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.bold,
-                                                decoration: isVisited
-                                                    ? TextDecoration.lineThrough
-                                                    : null,
-                                              ),
-                                              maxLines: 2,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                            const SizedBox(height: 6),
-                                            Row(
-                                              children: [
-                                                Icon(Icons.category_outlined,
-                                                    size: 16,
-                                                    color: Colors.grey[600]),
-                                                const SizedBox(width: 6),
-                                                Text(
-                                                  item['type'] ?? 'Unknown',
-                                                  style: TextStyle(
-                                                      color: Colors.grey[700],
-                                                      fontSize: 13),
-                                                ),
-                                                const Spacer(),
-                                                Text(
-                                                  item['cost'] ?? '—',
-                                                  style: const TextStyle(
-                                                      color: Colors.green,
-                                                      fontWeight:
-                                                          FontWeight.w600),
-                                                ),
-                                              ],
-                                            ),
-                                            const SizedBox(height: 12),
-                                            Row(
-                                              mainAxisAlignment:
-                                                  MainAxisAlignment.end,
-                                              children: [
-                                                if (!isVisited)
-                                                  OutlinedButton.icon(
-                                                    icon: const Icon(
-                                                        Icons
-                                                            .check_circle_outline,
-                                                        size: 18),
-                                                    label: const Text(
-                                                        'Mark Visited'),
-                                                    style: OutlinedButton
-                                                        .styleFrom(
-                                                      foregroundColor:
-                                                          Colors.green,
-                                                      side: const BorderSide(
-                                                          color: Colors.green),
-                                                      padding: const EdgeInsets
-                                                          .symmetric(
-                                                          horizontal: 16,
-                                                          vertical: 8),
-                                                    ),
-                                                    onPressed: () =>
-                                                        _markAsVisited(index),
+                                              if (isVisited)
+                                                Container(
+                                                  color: Colors.black
+                                                      .withOpacity(0.5),
+                                                  child: const Center(
+                                                    child: Icon(
+                                                        Icons.check_circle,
+                                                        size: 80,
+                                                        color: Colors.white70),
                                                   ),
-                                              ],
-                                            ),
-                                          ],
+                                                ),
+                                            ],
+                                          ),
                                         ),
-                                      ),
-                                    ],
+                                        Padding(
+                                          padding: const EdgeInsets.all(16),
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                item['name'] ?? 'Dream Spot',
+                                                style: TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.bold,
+                                                  decoration: isVisited
+                                                      ? TextDecoration
+                                                          .lineThrough
+                                                      : null,
+                                                ),
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                              const SizedBox(height: 6),
+                                              Row(
+                                                children: [
+                                                  Icon(Icons.category_outlined,
+                                                      size: 16,
+                                                      color: Colors.grey[600]),
+                                                  const SizedBox(width: 6),
+                                                  Text(
+                                                    item['type'] ?? 'Unknown',
+                                                    style: TextStyle(
+                                                        color: Colors.grey[700],
+                                                        fontSize: 13),
+                                                  ),
+                                                  const Spacer(),
+                                                  Text(
+                                                    item['cost'] ?? '—',
+                                                    style: const TextStyle(
+                                                        color: Colors.green,
+                                                        fontWeight:
+                                                            FontWeight.w600),
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 12),
+                                              Row(
+                                                mainAxisAlignment:
+                                                    MainAxisAlignment.end,
+                                                children: [
+                                                  if (!isVisited)
+                                                    OutlinedButton.icon(
+                                                      icon: const Icon(
+                                                          Icons
+                                                              .check_circle_outline,
+                                                          size: 18),
+                                                      label: const Text(
+                                                          'Mark Visited'),
+                                                      style: OutlinedButton
+                                                          .styleFrom(
+                                                        foregroundColor:
+                                                            Colors.green,
+                                                        side: const BorderSide(
+                                                            color:
+                                                                Colors.green),
+                                                        padding:
+                                                            const EdgeInsets
+                                                                .symmetric(
+                                                                horizontal: 16,
+                                                                vertical: 8),
+                                                      ),
+                                                      onPressed: () =>
+                                                          _markAsVisited(index),
+                                                    ),
+                                                ],
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ),
                               );
                             }).toList(),
-                            const SizedBox(height: 100), // space for FAB
+                            const SizedBox(height: 100),
                           ],
                         ),
                       ),
@@ -488,7 +520,7 @@ class _BucketListPageState extends State<BucketListPage>
         },
         icon: const Icon(Icons.add),
         label: const Text('Add More Spots'),
-        backgroundColor: const Color(0xFF651FFF),
+        backgroundColor: const Color(0xFF0000FF), //0xFF0000FF
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
     );
@@ -504,31 +536,22 @@ class _BucketListPageState extends State<BucketListPage>
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // Left side: Text + count
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Your Progress',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
+                const Text('Your Progress',
+                    style:
+                        TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
-                Text(
-                  totalVisited,
-                  style: const TextStyle(
-                      fontSize: 32, fontWeight: FontWeight.bold),
-                ),
-                Text(
-                  'Completed',
-                  style: TextStyle(color: Colors.grey[600], fontSize: 14),
-                ),
+                Text(totalVisited,
+                    style: const TextStyle(
+                        fontSize: 32, fontWeight: FontWeight.bold)),
+                Text('Completed',
+                    style: TextStyle(color: Colors.grey[600], fontSize: 14)),
               ],
             ),
-
-            // Right side: Compact progress circle
             SizedBox(
-              width: screenWidth *
-                  0.28, // Adjust this for perfect fit on your phone
+              width: screenWidth * 0.28,
               height: screenWidth * 0.28,
               child: Stack(
                 alignment: Alignment.center,
@@ -538,15 +561,14 @@ class _BucketListPageState extends State<BucketListPage>
                     strokeWidth: 10,
                     backgroundColor: Colors.grey[200],
                     valueColor:
-                        const AlwaysStoppedAnimation<Color>(Color(0xFF651FFF)),
+                        const AlwaysStoppedAnimation<Color>(Color(0xFF0000FF)),
                   ),
                   Text(
                     '${(completionPercentage * 100).toStringAsFixed(0)}%',
                     style: const TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF651FFF),
-                    ),
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF0000FF)),
                   ),
                 ],
               ),
@@ -572,7 +594,7 @@ class _BucketListPageState extends State<BucketListPage>
               style: TextStyle(
                   fontSize: 24,
                   fontWeight: FontWeight.bold,
-                  color: Color(0xFF651FFF)),
+                  color: Color(0xFF0000FF)),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 12),
@@ -586,8 +608,8 @@ class _BucketListPageState extends State<BucketListPage>
               icon: const Icon(Icons.explore),
               label: const Text('Discover Spots'),
               style: OutlinedButton.styleFrom(
-                foregroundColor: const Color(0xFF651FFF),
-                side: const BorderSide(color: Color(0xFF651FFF)),
+                foregroundColor: const Color(0xFF0000FF),
+                side: const BorderSide(color: Color(0xFF0000FF)),
                 padding:
                     const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
               ),
