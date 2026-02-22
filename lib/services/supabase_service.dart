@@ -1,8 +1,12 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+
+import '../utils/connectivity_helper.dart';
 
 class SupabaseService {
-  // Safe getter with null check — throws clear error if Supabase not ready
+  // Safe client getter with clear error
   SupabaseClient get client {
     final c = Supabase.instance.client;
     if (c == null) {
@@ -41,17 +45,19 @@ class SupabaseService {
   //  DESTINATIONS (User + Admin)
   // ────────────────────────────────────────────────
 
-  /// Get active destinations for users (filtered)
-  Future<List<Map<String, dynamic>>> getDestinations() async {
+  Future<List<Map<String, dynamic>>> getDestinations({
+    int page = 1,
+    int limit = 15,
+  }) async {
     final response = await client
         .from('destinations')
         .select()
         .eq('status', 'active')
-        .order('name', ascending: true);
+        .order('name', ascending: true)
+        .range((page - 1) * limit, page * limit - 1);
     return List<Map<String, dynamic>>.from(response);
   }
 
-  /// Get recent destinations for dashboard (sorted by created_at)
   Future<List<Map<String, dynamic>>> getRecentDestinations({
     int limit = 5,
   }) async {
@@ -61,7 +67,6 @@ class SupabaseService {
           .select('id, name, category, image_url, status, created_at')
           .order('created_at', ascending: false)
           .limit(limit);
-
       return List<Map<String, dynamic>>.from(response);
     } catch (e) {
       debugPrint('Error fetching recent destinations: $e');
@@ -69,7 +74,6 @@ class SupabaseService {
     }
   }
 
-  /// Get ALL destinations for admin (unfiltered)
   Future<List<Map<String, dynamic>>> getAllDestinations() async {
     final response = await client
         .from('destinations')
@@ -78,18 +82,15 @@ class SupabaseService {
     return List<Map<String, dynamic>>.from(response);
   }
 
-  /// Add new destination (admin only)
   Future<void> addDestination(Map<String, dynamic> data) async {
     await client.from('destinations').insert(data);
   }
 
-  /// Update existing destination (admin only)
   Future<void> updateDestination(
       String id, Map<String, dynamic> updates) async {
     await client.from('destinations').update(updates).eq('id', id);
   }
 
-  /// Delete destination (admin only)
   Future<void> deleteDestination(String id) async {
     await client.from('destinations').delete().eq('id', id);
   }
@@ -98,7 +99,6 @@ class SupabaseService {
   //  USERS (Admin Approval & Management)
   // ────────────────────────────────────────────────
 
-  /// Get all users for admin_users page
   Future<List<Map<String, dynamic>>> getAllUsers() async {
     final response = await client
         .from('users')
@@ -107,7 +107,6 @@ class SupabaseService {
     return List<Map<String, dynamic>>.from(response);
   }
 
-  /// Approve or reject a user
   Future<void> updateUserStatus(String userId, String newStatus) async {
     await client
         .from('users')
@@ -122,24 +121,30 @@ class SupabaseService {
     required String userId,
     required String destinationId,
     required String destinationName,
-    String? note,
-    double? rating,
+    String? imageUrl,
+    String? category,
   }) async {
     await client.from('travel_history').insert({
       'user_id': userId,
       'destination_id': destinationId,
       'destination_name': destinationName,
-      'note': note ?? '',
-      'rating_given': rating,
+      'image_url': imageUrl,
+      'category': category ?? 'Unknown', // Ensures category is always saved
+      'visited_at': DateTime.now().toIso8601String(),
     });
+    debugPrint(
+        'Added to history: $destinationName (category: ${category ?? 'Unknown'})');
   }
 
   Future<List<Map<String, dynamic>>> getUserHistory(String userId) async {
     final response = await client
         .from('travel_history')
-        .select()
+        .select(
+            '*, category, image_url') // Explicitly fetch category & image_url
         .eq('user_id', userId)
         .order('visited_at', ascending: false);
+
+    debugPrint('History loaded: ${response.length} entries');
     return List<Map<String, dynamic>>.from(response);
   }
 
@@ -161,11 +166,11 @@ class SupabaseService {
       'user_id': userId,
       'destination_id': destination['destination_id'],
       'name': destination['name'],
-      'type': destination['type'],
-      'distance': destination['distance'],
-      'duration': destination['duration'],
-      'cost': destination['cost'],
-      'image': destination['image'],
+      'category': destination['category'] ?? 'Unknown',
+      'location': destination['location'],
+      'travel_time': destination['travel_time'],
+      'price_range': destination['price_range'],
+      'image_url': destination['image_url'],
       'order_index': orderIndex,
     });
   }
@@ -187,7 +192,6 @@ class SupabaseService {
     await client.from('trip_plans').delete().eq('user_id', userId);
   }
 
-  /// Get all category names for dropdowns
   Future<List<String>> getCategoryNames() async {
     final response = await client
         .from('categories')
@@ -200,14 +204,13 @@ class SupabaseService {
   }
 
   // ────────────────────────────────────────────────
-  //  DESTINATION COMMENTS & RATINGS (User Reviews)
+  //  DESTINATION COMMENTS & RATINGS
   // ────────────────────────────────────────────────
 
-  // Add comment + optional rating (1-5 stars)
   Future<void> addDestinationComment({
     required String destinationId,
     required String commentText,
-    int? rating, // 1-5 or null
+    int? rating,
   }) async {
     final userId = client.auth.currentUser?.id;
     if (userId == null) throw Exception('Not logged in');
@@ -220,25 +223,15 @@ class SupabaseService {
     });
   }
 
-  // Get comments for a destination (with username from users table)
-// Get comments for a destination (with username join)
-  /// Returns a map with:
-  /// - 'comments': List<Map> of enriched comments
-  /// - 'avg_rating': String (e.g. '4.3' or '0.0')
-  /// - 'rating_count': int (total number of ratings)
   Future<Map<String, dynamic>> getDestinationComments(
       String destinationId) async {
     try {
-      debugPrint('Fetching comments + rating for ID: $destinationId');
-
-      // 1. Get comments + user IDs
       final comments = await client
           .from('destination_comments')
           .select('id, comment_text, rating, created_at, user_id')
           .eq('destination_id', destinationId)
           .order('created_at', ascending: false);
 
-      // 2. Calculate avg rating & count right here (no extra query)
       double avgRating = 0.0;
       int ratingCount = 0;
 
@@ -254,9 +247,6 @@ class SupabaseService {
         }
       }
 
-      debugPrint('Calculated avg: $avgRating from $ratingCount ratings');
-
-      // 3. Get usernames if there are comments
       List<Map<String, dynamic>> enrichedComments = comments;
 
       if (comments.isNotEmpty) {
@@ -278,9 +268,6 @@ class SupabaseService {
         }).toList();
       }
 
-      debugPrint('Comments enriched: ${enrichedComments.length}');
-
-      // 4. Return everything in one nice map
       return {
         'comments': enrichedComments,
         'avg_rating': avgRating.toStringAsFixed(1),
@@ -295,8 +282,9 @@ class SupabaseService {
       };
     }
   }
+
   // ────────────────────────────────────────────────
-  //  ADMIN DASHBOARD & REPORTS STATS
+  //  ADMIN DASHBOARD & REPORTS
   // ────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getAdminStats() async {
@@ -339,8 +327,6 @@ class SupabaseService {
           .select('avg(rating)::numeric as avg_rating')
           .single();
 
-      debugPrint('REPORT STATS SUCCESS - total dest: ${dest['total'] ?? 0}');
-
       return {
         'total_destinations': dest['total'] ?? 0,
         'active_destinations': dest['active'] ?? 0,
@@ -362,6 +348,28 @@ class SupabaseService {
     }
   }
 
+  Future<T> safeSupabaseCall<T>(Future<T> Function() call) async {
+    try {
+      if (!await isConnected()) {
+        throw Exception('No internet connection');
+      }
+      return await call();
+    } catch (e) {
+      String userMessage = 'Something went wrong. Please try again.';
+
+      if (e.toString().contains('No internet')) {
+        userMessage = 'No internet connection. Please check your data.';
+      } else if (e.toString().contains('timeout') ||
+          e.toString().contains('SocketException')) {
+        userMessage = 'Connection timed out. Your network may be slow.';
+      } else if (e.toString().contains('403') || e.toString().contains('401')) {
+        userMessage = 'Authentication issue. Please log in again.';
+      }
+
+      throw Exception(userMessage);
+    }
+  }
+
   Future<List<Map<String, dynamic>>> getCategoryStats() async {
     try {
       final response = await client.from('destinations').select('''
@@ -369,8 +377,6 @@ class SupabaseService {
           count(*)::integer as destinations, 
           avg(rating)::numeric as rating
         ''').order('category', ascending: true);
-
-      debugPrint('CATEGORY STATS SUCCESS - rows: ${response.length}');
 
       final List<Map<String, dynamic>> result = [
         {

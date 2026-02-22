@@ -11,13 +11,13 @@ import '../services/supabase_service.dart';
 import 'bucket_list_page.dart';
 
 class MapPage extends StatefulWidget {
-  final String currentUserId;
+  final String? currentUserId; // ← Now nullable (guest mode support)
   final Map<String, dynamic>? initialDestination;
   final bool autoStartNavigation;
 
   const MapPage({
     super.key,
-    required this.currentUserId,
+    this.currentUserId,
     this.initialDestination,
     this.autoStartNavigation = false,
   });
@@ -28,7 +28,7 @@ class MapPage extends StatefulWidget {
 
 class _MapPageState extends State<MapPage> {
   final MapController _mapController = MapController();
-  double _currentZoom = 11.0;
+  double _currentZoom = 10.0;
   LatLng? _currentPosition;
   bool _isDriving = true;
   bool _isLoading = true;
@@ -47,7 +47,6 @@ class _MapPageState extends State<MapPage> {
   List<LatLng> _previewRoutePoints = [];
   bool _showPreviewRoute = false;
 
-  // Track destination from "Start Navigation" → make it red
   String? _navigationStartedDestinationId;
 
   StreamSubscription<Position>? _positionStream;
@@ -76,14 +75,13 @@ class _MapPageState extends State<MapPage> {
         ),
       );
 
-      // Handle coming from DestinationDetailPage "Start Navigation"
       if (widget.initialDestination != null) {
         final dest = widget.initialDestination!;
         final destId = dest['id']?.toString() ?? '';
 
         if (destId.isNotEmpty) {
           setState(() {
-            _navigationStartedDestinationId = destId; // trigger red highlight
+            _navigationStartedDestinationId = destId;
           });
 
           final lat =
@@ -92,14 +90,11 @@ class _MapPageState extends State<MapPage> {
               double.tryParse(dest['longitude']?.toString() ?? '0') ?? 0.0;
 
           if (lat != 0.0 && lng != 0.0) {
-            // Center only – NO zoom change (keeps 11.0 or last zoom)
             _mapController.move(LatLng(lat, lng), _currentZoom);
           }
         }
 
-        // Auto-start navigation if requested from "Start Navigation" button
         if (widget.autoStartNavigation && _currentPosition != null) {
-          // Small delay to ensure map & location are ready
           Future.delayed(const Duration(milliseconds: 1200), () {
             if (mounted) {
               _startInAppNavigation(widget.initialDestination!);
@@ -117,6 +112,41 @@ class _MapPageState extends State<MapPage> {
     super.dispose();
   }
 
+  // ────────────────────────────────────────────────
+  //  Guest Login Prompt (used in bottom sheet)
+  // ────────────────────────────────────────────────
+  void _showLoginRequired(String action) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text("Sign in to continue"),
+        content: Text(
+          "To $action you need to be logged in.\n\n"
+          "Sign in or create an account to save places to your bucket list, mark them as visited, and track your personal travel history.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("Cancel"),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.login),
+            label: const Text("Sign In"),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1565FF),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              Navigator.pop(ctx);
+              Navigator.pushNamed(context, '/login');
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _loadDestinations() async {
     try {
       final dests = await _service.getDestinations();
@@ -130,8 +160,9 @@ class _MapPageState extends State<MapPage> {
                       double.tryParse(d['longitude']?.toString() ?? '0') ?? 0,
                     ),
                   })
-              .where(
-                  (d) => d['location'] != null && d['location'].latitude != 0)
+              .where((d) =>
+                  d['location'] != null &&
+                  (d['location'] as LatLng).latitude != 0)
               .toList();
 
           _updateNearby();
@@ -150,8 +181,10 @@ class _MapPageState extends State<MapPage> {
   }
 
   Future<void> _loadPreviewRoute() async {
+    if (widget.currentUserId == null) return; // Guests don't have trip plan
+
     try {
-      final plan = await _service.getTripPlan(widget.currentUserId);
+      final plan = await _service.getTripPlan(widget.currentUserId!);
       if (plan.isEmpty || !mounted) return;
 
       List<LatLng> points = [];
@@ -399,6 +432,8 @@ class _MapPageState extends State<MapPage> {
   }
 
   void _showLocationDetails(BuildContext context, Map<String, dynamic> data) {
+    final bool isLoggedIn = widget.currentUserId != null;
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -478,10 +513,11 @@ class _MapPageState extends State<MapPage> {
                       Row(
                         children: [
                           _buildInfoRow(
-                              Icons.location_on_outlined,
-                              data['calculated_distance'] ??
-                                  data['distance'] ??
-                                  'N/A'),
+                            Icons.location_on_outlined,
+                            data['calculated_distance'] ??
+                                data['distance'] ??
+                                'N/A',
+                          ),
                           const SizedBox(width: 24),
                           _buildInfoRow(
                               Icons.access_time, data['time'] ?? 'N/A'),
@@ -523,13 +559,18 @@ class _MapPageState extends State<MapPage> {
                       Colors.blue.shade50,
                       Colors.blue,
                       () {
+                        if (!isLoggedIn) {
+                          _showLoginRequired(
+                              "pin this place to your bucket list");
+                          return;
+                        }
                         Navigator.pop(context);
                         Navigator.push(
                           context,
                           MaterialPageRoute(
                             builder: (context) => BucketListPage(
                               initialLocation: data,
-                              currentUserId: widget.currentUserId,
+                              currentUserId: widget.currentUserId!,
                             ),
                           ),
                         );
@@ -542,21 +583,22 @@ class _MapPageState extends State<MapPage> {
                       Colors.green.shade50,
                       Colors.green,
                       () async {
-                        final user = supabase.auth.currentUser;
-                        if (user == null) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Log in first')),
-                          );
+                        if (!isLoggedIn) {
+                          _showLoginRequired("mark this place as visited");
                           return;
                         }
+
+                        final user = supabase.auth.currentUser;
+                        if (user == null) return;
+
                         try {
                           await _service.addToHistory(
                             userId: user.id,
                             destinationId: data['id'].toString(),
                             destinationName: data['name'],
-                            note: null,
-                            rating: double.tryParse(
-                                data['rating']?.toString() ?? '4.0'),
+                            imageUrl: data['image_url'] ??
+                                'https://via.placeholder.com/400x225',
+                            category: data['type'] ?? 'Unknown',
                           );
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
@@ -633,7 +675,6 @@ class _MapPageState extends State<MapPage> {
     );
   }
 
-  // ─── MARKERS: Red color + glow for selected destination (no pin icon) ─────
   List<Marker> _buildMarkers() {
     final markers = <Marker>[];
 
@@ -655,7 +696,6 @@ class _MapPageState extends State<MapPage> {
             child: Stack(
               alignment: Alignment.center,
               children: [
-                // Red glow only for the selected destination
                 if (isTarget)
                   Container(
                     width: size * 1.8,
@@ -666,8 +706,7 @@ class _MapPageState extends State<MapPage> {
                     ),
                   ),
                 Icon(
-                  _getCategoryIcon(
-                      dest['type']), // keep original icon, just make it red
+                  _getCategoryIcon(dest['type']),
                   color: color,
                   size: size,
                 ),
@@ -746,12 +785,10 @@ class _MapPageState extends State<MapPage> {
                       maxZoom: 17.0,
                       onPositionChanged: (MapCamera camera, bool hasGesture) {
                         if (hasGesture) {
-                          if (camera.zoom < 5.5) {
+                          if (camera.zoom < 5.5)
                             _mapController.move(camera.center, 11.0);
-                          }
-                          if (camera.zoom > 17.0) {
+                          if (camera.zoom > 17.0)
                             _mapController.move(camera.center, 17.0);
-                          }
 
                           LatLng clampedCenter = camera.center;
                           if (!_phBounds.contains(clampedCenter)) {

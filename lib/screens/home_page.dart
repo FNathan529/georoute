@@ -3,17 +3,63 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import '../services/supabase_service.dart';
-import '../utils/distance_calculator.dart'; // Assuming you have this for calculateDistance
+import '../utils/distance_calculator.dart';
 import 'destination_detail.dart';
 import 'history_page.dart';
 import 'map_page.dart';
-import 'bucket_list_page.dart'; // ← NEW: Import your bucket list page
+import 'bucket_list_page.dart';
 import 'profile_page.dart';
 
-class HomePage extends StatefulWidget {
-  final String currentUserId;
+// ────────────────────────────────────────────────
+//   Helper: require login for protected features
+// ────────────────────────────────────────────────
+Future<void> requireAuth({
+  required BuildContext context,
+  required String? currentUserId,
+  required String featureName,
+  required VoidCallback onSuccess,
+}) async {
+  if (currentUserId != null) {
+    onSuccess();
+    return;
+  }
 
-  const HomePage({Key? key, required this.currentUserId}) : super(key: key);
+  final bool? shouldLogin = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: const Text("Sign in to continue"),
+      content: Text(
+        "You need to be signed in to $featureName.\n"
+        "Log in or create an account to access your bucket list, travel history, profile, and more.",
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text("Maybe later"),
+        ),
+        ElevatedButton.icon(
+          icon: const Icon(Icons.login, size: 18),
+          label: const Text("Sign In"),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF1565FF),
+            foregroundColor: Colors.white,
+          ),
+          onPressed: () => Navigator.pop(dialogContext, true),
+        ),
+      ],
+    ),
+  );
+
+  if (shouldLogin == true) {
+    Navigator.pushNamed(context, '/login');
+  }
+}
+
+class HomePage extends StatefulWidget {
+  final String? currentUserId;
+
+  const HomePage({Key? key, this.currentUserId}) : super(key: key);
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -25,10 +71,9 @@ class _HomePageState extends State<HomePage> {
   List<Widget> get _pages => [
         HomeContent(currentUserId: widget.currentUserId),
         MapPage(currentUserId: widget.currentUserId),
-        BucketListPage(
-            currentUserId: widget.currentUserId), // ← Changed from PlannerPage
+        BucketListPage(currentUserId: widget.currentUserId),
         HistoryPage(currentUserId: widget.currentUserId),
-        const ProfilePage(),
+        ProfilePage(currentUserId: widget.currentUserId),
       ];
 
   @override
@@ -41,18 +86,34 @@ class _HomePageState extends State<HomePage> {
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
-        onTap: (index) => setState(() => _currentIndex = index),
         type: BottomNavigationBarType.fixed,
         selectedItemColor: const Color(0xFF1565FF),
         unselectedItemColor: Colors.grey,
         showUnselectedLabels: true,
+        onTap: (index) {
+          if (widget.currentUserId == null &&
+              (index == 2 || index == 3 || index == 4)) {
+            requireAuth(
+              context: context,
+              currentUserId: widget.currentUserId,
+              featureName: index == 2
+                  ? "access your Bucket List"
+                  : index == 3
+                      ? "view your Travel History"
+                      : "access your Profile",
+              onSuccess: () {
+                setState(() => _currentIndex = index);
+              },
+            );
+            return;
+          }
+          setState(() => _currentIndex = index);
+        },
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
           BottomNavigationBarItem(icon: Icon(Icons.map_outlined), label: 'Map'),
           BottomNavigationBarItem(
-            icon: Icon(Icons.favorite_border), // ← Better icon for Bucket List
-            label: 'Bucket List',
-          ),
+              icon: Icon(Icons.favorite_border), label: 'Bucket List'),
           BottomNavigationBarItem(icon: Icon(Icons.history), label: 'History'),
           BottomNavigationBarItem(
               icon: Icon(Icons.person_outline), label: 'Profile'),
@@ -62,15 +123,10 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// HomeContent remains mostly unchanged (your existing code)
-// Only minor tweaks for consistency
-// ──────────────────────────────────────────────────────────────────────────────
-
 class HomeContent extends StatefulWidget {
-  final String currentUserId;
+  final String? currentUserId;
 
-  const HomeContent({Key? key, required this.currentUserId}) : super(key: key);
+  const HomeContent({Key? key, this.currentUserId}) : super(key: key);
 
   @override
   State<HomeContent> createState() => _HomeContentState();
@@ -79,15 +135,22 @@ class HomeContent extends StatefulWidget {
 class _HomeContentState extends State<HomeContent> {
   final SupabaseService _service = SupabaseService();
 
+  // Pagination vars
+  final ScrollController _scrollController = ScrollController();
+  bool _isLoadingMore = false;
+  int _currentPage = 1;
+  bool _hasMore = true;
+
   String _searchQuery = '';
   int _selectedCategoryIndex = 0;
   List<Map<String, dynamic>> _displayedDestinations = [];
   List<Map<String, dynamic>> _allDestinations = [];
   bool _isLoading = true;
 
-  // User location
   Position? _userPosition;
   bool _locationLoading = false;
+  String _locationStatus = ''; // ← Empty by default → hides bar
+  bool _locationDeniedForever = false;
 
   StreamSubscription<List<Map<String, dynamic>>>? _destinationSubscription;
 
@@ -100,7 +163,6 @@ class _HomeContentState extends State<HomeContent> {
     _getUserLocation();
     _loadCategories();
 
-    // Real-time destination updates
     _destinationSubscription = Supabase.instance.client
         .from('destinations')
         .stream(primaryKey: ['id']).listen((List<Map<String, dynamic>> data) {
@@ -110,9 +172,82 @@ class _HomeContentState extends State<HomeContent> {
         _filterDestinations();
       });
     });
+
+    _scrollController.addListener(() {
+      if (_scrollController.position.pixels >=
+              _scrollController.position.maxScrollExtent - 200 &&
+          !_isLoadingMore &&
+          _hasMore) {
+        _loadMoreDestinations();
+      }
+    });
   }
 
-  // NEW: Fetch categories from Supabase
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _destinationSubscription?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadDestinations() async {
+    setState(() => _isLoading = true);
+    try {
+      final data = await _service.getDestinations(page: 1, limit: 15);
+      if (mounted) {
+        setState(() {
+          _allDestinations = data;
+          _displayedDestinations = List.from(data);
+          _currentPage = 1;
+          _hasMore = data.length >= 15;
+          _isLoading = false;
+        });
+        _updateAllDistances();
+      }
+    } catch (e) {
+      debugPrint('Load destinations error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading destinations')),
+        );
+      }
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _loadMoreDestinations() async {
+    if (_isLoadingMore || !_hasMore) return;
+
+    setState(() => _isLoadingMore = true);
+
+    try {
+      final more =
+          await _service.getDestinations(page: _currentPage + 1, limit: 15);
+      if (mounted) {
+        setState(() {
+          if (more.isEmpty) {
+            _hasMore = false;
+          } else {
+            _allDestinations.addAll(more);
+            _filterDestinations();
+            _currentPage++;
+            _hasMore = more.length >= 15;
+          }
+        });
+        _updateAllDistances();
+      }
+    } catch (e) {
+      debugPrint('Load more error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load more')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoadingMore = false);
+    }
+  }
+
   Future<void> _loadCategories() async {
     try {
       final response = await Supabase.instance.client
@@ -123,12 +258,10 @@ class _HomeContentState extends State<HomeContent> {
       if (!mounted) return;
 
       setState(() {
-        // Always keep 'All' as first option
         _categories = ['All', ...response.map((row) => row['name'] as String)];
       });
     } catch (e) {
       debugPrint('Error loading categories: $e');
-      // Fallback to hardcoded if fetch fails (optional)
       setState(() {
         _categories = [
           'All',
@@ -137,73 +270,79 @@ class _HomeContentState extends State<HomeContent> {
           'Mountain',
           'Cultural',
           'Adventure',
-          'Waterpark',
+          'Waterpark'
         ];
       });
     }
   }
 
-  @override
-  void dispose() {
-    _destinationSubscription?.cancel();
-    super.dispose();
-  }
+  Future<void> _getUserLocation({bool forceRetry = false}) async {
+    if (!forceRetry && _userPosition != null && !_locationDeniedForever) return;
 
-  Future<void> _loadDestinations() async {
-    setState(() => _isLoading = true);
-    try {
-      final data = await _service.getDestinations();
-      setState(() {
-        _allDestinations = data;
-        _displayedDestinations = List.from(data);
-        _isLoading = false;
-      });
-    } catch (e) {
-      setState(() => _isLoading = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error loading destinations: $e')),
-        );
-      }
-    }
-  }
+    setState(() {
+      _locationLoading = true;
+      _locationStatus = 'Checking location...';
+    });
 
-  Future<void> _getUserLocation() async {
-    setState(() => _locationLoading = true);
     try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Location services are disabled')),
-          );
-        }
-        setState(() => _locationLoading = false);
+        setState(() {
+          _locationStatus = 'Location services disabled';
+          _locationLoading = false;
+          _locationDeniedForever = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text("Location is off – enable to see distances"),
+            action: SnackBarAction(
+              label: 'Settings',
+              onPressed: () async {
+                await Geolocator.openLocationSettings();
+                _getUserLocation(forceRetry: true);
+              },
+            ),
+          ),
+        );
         return;
       }
 
-      LocationPermission permission = await Geolocator.checkPermission();
+      var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Location permission denied')),
-            );
-          }
-          setState(() => _locationLoading = false);
-          return;
-        }
+      }
+
+      if (permission == LocationPermission.denied) {
+        setState(() {
+          _locationStatus = 'Permission denied';
+          _locationLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text("Permission denied – distances won't show")),
+        );
+        return;
       }
 
       if (permission == LocationPermission.deniedForever) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-                content: Text('Location permissions permanently denied')),
-          );
-        }
-        setState(() => _locationLoading = false);
+        setState(() {
+          _locationStatus = 'Permission permanently denied';
+          _locationDeniedForever = true;
+          _locationLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+                "Location access permanently denied. Enable in app settings."),
+            action: SnackBarAction(
+              label: 'Settings',
+              onPressed: () async {
+                await Geolocator.openAppSettings();
+                _getUserLocation(forceRetry: true);
+              },
+            ),
+          ),
+        );
         return;
       }
 
@@ -211,20 +350,46 @@ class _HomeContentState extends State<HomeContent> {
         desiredAccuracy: LocationAccuracy.medium,
       );
 
-      if (mounted) {
-        setState(() {
-          _userPosition = position;
-          _locationLoading = false;
-        });
-      }
+      setState(() {
+        _userPosition = position;
+        _locationLoading = false;
+        _locationDeniedForever = false;
+        _locationStatus = ''; // ← Empty = hide status bar
+      });
+
+      _updateAllDistances();
     } catch (e) {
-      setState(() => _locationLoading = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error getting location: $e')),
-        );
-      }
+      setState(() {
+        _locationStatus = 'Location error';
+        _locationLoading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Couldn't get location. Try again.")),
+      );
     }
+  }
+
+  void _updateAllDistances() {
+    if (_userPosition == null) return;
+
+    setState(() {
+      _displayedDestinations = _displayedDestinations.map((dest) {
+        final lat = dest['latitude'] as double?;
+        final lng = dest['longitude'] as double?;
+        if (lat != null && lng != null) {
+          final dist = calculateDistance(
+            _userPosition!.latitude,
+            _userPosition!.longitude,
+            lat,
+            lng,
+          );
+          dest['distanceText'] = '${dist.toStringAsFixed(1)} km away';
+        } else {
+          dest['distanceText'] = 'Distance N/A';
+        }
+        return dest;
+      }).toList();
+    });
   }
 
   void _filterDestinations() {
@@ -241,6 +406,8 @@ class _HomeContentState extends State<HomeContent> {
 
         return matchesSearch && matchesCategory;
       }).toList();
+
+      _updateAllDistances();
     });
   }
 
@@ -248,8 +415,12 @@ class _HomeContentState extends State<HomeContent> {
   Widget build(BuildContext context) {
     return SafeArea(
       child: RefreshIndicator(
-        onRefresh: _loadDestinations,
+        onRefresh: () async {
+          await _getUserLocation(forceRetry: true);
+          await _loadDestinations();
+        },
         child: SingleChildScrollView(
+          controller: _scrollController,
           physics: const AlwaysScrollableScrollPhysics(),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -258,6 +429,62 @@ class _HomeContentState extends State<HomeContent> {
               const SizedBox(height: 20),
               _buildCategories(),
               const SizedBox(height: 25),
+
+              // Location status bar – only shows when there's an issue
+              if (_locationLoading ||
+                  _locationStatus.isNotEmpty ||
+                  _locationDeniedForever)
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  child: Row(
+                    children: [
+                      Icon(
+                        _locationLoading
+                            ? Icons.location_searching
+                            : _locationDeniedForever
+                                ? Icons.location_disabled
+                                : _userPosition != null
+                                    ? Icons.check_circle
+                                    : Icons.location_off,
+                        color: _locationLoading
+                            ? Colors.blue
+                            : _locationDeniedForever
+                                ? Colors.red
+                                : _userPosition != null
+                                    ? Colors.green
+                                    : Colors.grey,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _locationStatus.isEmpty
+                              ? 'Location OK'
+                              : _locationStatus,
+                          style: TextStyle(
+                            color: _locationLoading
+                                ? Colors.blue
+                                : _locationDeniedForever
+                                    ? Colors.red
+                                    : _userPosition != null
+                                        ? Colors.green[700]
+                                        : Colors.grey[700],
+                          ),
+                        ),
+                      ),
+                      if (_locationDeniedForever ||
+                          _locationStatus.contains('denied') ||
+                          _locationStatus.contains('disabled'))
+                        TextButton(
+                          onPressed: () => _getUserLocation(forceRetry: true),
+                          child: const Text('Fix',
+                              style: TextStyle(color: Color(0xFF1565FF))),
+                        ),
+                    ],
+                  ),
+                ),
+
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20.0),
                 child: Row(
@@ -270,17 +497,14 @@ class _HomeContentState extends State<HomeContent> {
                     ),
                     if (_locationLoading)
                       const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    else
-                      Icon(Icons.location_on_outlined,
-                          color: Colors.blue[600], size: 20),
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2)),
                   ],
                 ),
               ),
               const SizedBox(height: 15),
+
               _isLoading
                   ? const Center(child: CircularProgressIndicator())
                   : _displayedDestinations.isEmpty
@@ -294,10 +518,9 @@ class _HomeContentState extends State<HomeContent> {
                               Text(
                                 "No destinations yet",
                                 style: TextStyle(
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.grey[700],
-                                ),
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.grey[700]),
                               ),
                               const SizedBox(height: 8),
                               Text(
@@ -308,7 +531,14 @@ class _HomeContentState extends State<HomeContent> {
                           ),
                         )
                       : _buildDestinationList(),
-              const SizedBox(height: 30),
+
+              if (_isLoadingMore)
+                const Padding(
+                  padding: EdgeInsets.all(32.0),
+                  child: Center(child: CircularProgressIndicator()),
+                ),
+
+              const SizedBox(height: 50),
             ],
           ),
         ),
@@ -417,16 +647,7 @@ class _HomeContentState extends State<HomeContent> {
         final lat = data['latitude'] as double?;
         final lng = data['longitude'] as double?;
 
-        String distanceText = 'Distance N/A';
-        if (_userPosition != null && lat != null && lng != null) {
-          final dist = calculateDistance(
-            _userPosition!.latitude,
-            _userPosition!.longitude,
-            lat,
-            lng,
-          );
-          distanceText = '${dist.toStringAsFixed(1)} km away';
-        }
+        String distanceText = data['distanceText'] ?? 'Distance N/A';
 
         return GestureDetector(
           onTap: () {
@@ -503,7 +724,7 @@ class _HomeContentState extends State<HomeContent> {
                                     color: Colors.amber, size: 14),
                                 const SizedBox(width: 4),
                                 Text(
-                                  (data['rating'] as num?)
+                                  (data['avg_rating'] as num?)
                                           ?.toStringAsFixed(1) ??
                                       '–',
                                   style: const TextStyle(
@@ -517,7 +738,7 @@ class _HomeContentState extends State<HomeContent> {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        '${data['location'] ?? 'N/A'} • ${data['travel_time'] ?? 'N/A'}',
+                        '${data['location'] ?? 'N/A'}\n${data['travel_time'] ?? 'N/A'}',
                         style: TextStyle(fontSize: 13, color: Colors.grey[700]),
                       ),
                       const SizedBox(height: 4),

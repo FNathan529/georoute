@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_application_1/screens/admin_onboarding_editor.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -11,6 +12,7 @@ import 'screens/admin_destination.dart';
 import 'screens/admin_categories.dart';
 import 'screens/admin_users.dart';
 import 'screens/admin_reports.dart';
+import 'screens/admin_onboarding_editor.dart';
 import 'screens/register.dart';
 
 void main() async {
@@ -91,6 +93,7 @@ class _GeoRouteAppState extends State<GeoRouteApp> {
       ),
       routes: {
         '/login': (context) => const LoginPage(),
+        '/admin-onboarding': (context) => const AdminOnboardingEditor(),
         '/onboarding': (context) => OnboardingPage(),
         '/home': (context) => HomePage(
               currentUserId: supabase.auth.currentUser?.id ?? '',

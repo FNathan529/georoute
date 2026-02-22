@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/supabase_service.dart';
 
 class AdminDashboard extends StatefulWidget {
@@ -22,12 +23,33 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
   bool _isLoading = true;
   bool _isLoadingDestinations = false;
+  String? _userRole; // To check if admin
 
   @override
   void initState() {
     super.initState();
     _service = SupabaseService();
+    _loadUserRole();
     _loadData();
+  }
+
+  Future<void> _loadUserRole() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+
+    try {
+      final profile = await Supabase.instance.client
+          .from('users')
+          .select('role')
+          .eq('id', user.id)
+          .single();
+
+      setState(() {
+        _userRole = profile['role'] as String?;
+      });
+    } catch (e) {
+      debugPrint('Error loading user role: $e');
+    }
   }
 
   Future<void> _loadData() async {
@@ -37,44 +59,44 @@ class _AdminDashboardState extends State<AdminDashboard> {
     });
 
     try {
-      // Load stats
       final stats = await _service.getAdminStats();
-
-      // Load recent destinations
       final destinations = await _service.getRecentDestinations(limit: 5);
 
-      if (!mounted) return;
-
-      setState(() {
-        _stats = stats;
-        _recentDestinations = destinations;
-        _isLoading = false;
-        _isLoadingDestinations = false;
-      });
+      if (mounted) {
+        setState(() {
+          _stats = stats;
+          _recentDestinations = destinations;
+          _isLoading = false;
+          _isLoadingDestinations = false;
+        });
+      }
     } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _isLoading = false;
-        _isLoadingDestinations = false;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error loading dashboard data: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isLoadingDestinations = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading dashboard data: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final isAdmin = _userRole == 'admin';
+
     return Scaffold(
       backgroundColor: const Color(0xFFF4F7FE),
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Sidebar (unchanged)
-          _buildSideNavigationBar(context),
+          // Sidebar
+          _buildSideNavigationBar(context, isAdmin: isAdmin),
 
           // Main Content
           Expanded(
@@ -101,7 +123,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
                   const SizedBox(height: 40),
 
-                  // Recent Destinations Section - NOW REAL
+                  // Recent Destinations
                   const Text(
                     'Recent Destinations',
                     style: TextStyle(
@@ -118,6 +140,22 @@ class _AdminDashboardState extends State<AdminDashboard> {
                     _buildEmptyDestinations()
                   else
                     _buildRecentDestinationsList(),
+
+                  const SizedBox(height: 40),
+
+                  // New: Admin Onboarding Management (only visible to admins)
+                  if (isAdmin) ...[
+                    const Text(
+                      'Content Management',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1B2559),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildOnboardingCard(),
+                  ],
                 ],
               ),
             ),
@@ -128,9 +166,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 
   // ────────────────────────────────────────────────
-  //  SIDEBAR (unchanged)
+  //  SIDEBAR – now shows/hides admin features
   // ────────────────────────────────────────────────
-  Widget _buildSideNavigationBar(BuildContext context) {
+  Widget _buildSideNavigationBar(BuildContext context,
+      {required bool isAdmin}) {
     return Container(
       width: 250,
       color: const Color(0xFF111C44),
@@ -165,6 +204,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
               context, Icons.people, 'Users', '/AdminUsers', false),
           _buildSideNavItem(
               context, Icons.description, 'Reports', '/AdminReports', false),
+          if (isAdmin)
+            _buildSideNavItem(context, Icons.slideshow, 'Onboarding Slides',
+                '/admin-onboarding', false),
           const Spacer(),
           _buildSideNavItem(context, Icons.logout, 'Logout', '/', false,
               isLogout: true),
@@ -212,7 +254,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 
   // ────────────────────────────────────────────────
-  //  STATISTICS CARDS (unchanged)
+  //  STATISTICS CARDS
   // ────────────────────────────────────────────────
   Widget _buildStatisticsCards() {
     return Row(
@@ -319,7 +361,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 
   // ────────────────────────────────────────────────
-  //  REAL RECENT DESTINATIONS
+  //  RECENT DESTINATIONS
   // ────────────────────────────────────────────────
   Widget _buildRecentDestinationsList() {
     return Container(
@@ -417,11 +459,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
               ),
               if (index < _recentDestinations.length - 1)
                 Divider(
-                  height: 1,
-                  color: Colors.grey[200],
-                  indent: 70,
-                  endIndent: 20,
-                ),
+                    height: 1,
+                    color: Colors.grey[200],
+                    indent: 70,
+                    endIndent: 20),
             ],
           );
         }).toList(),
@@ -451,11 +492,72 @@ class _AdminDashboardState extends State<AdminDashboard> {
             SizedBox(height: 16),
             Text(
               'No destinations added yet',
-              style: TextStyle(
-                fontSize: 16,
-                color: Colors.grey,
+              style: TextStyle(fontSize: 16, color: Colors.grey),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ────────────────────────────────────────────────
+  //  NEW: Onboarding Management Card (for admins)
+  // ────────────────────────────────────────────────
+  Widget _buildOnboardingCard() {
+    return GestureDetector(
+      onTap: () {
+        Navigator.pushNamed(context, '/admin-onboarding');
+      },
+      child: Container(
+        margin: const EdgeInsets.only(top: 20),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.grey.withOpacity(0.05),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1565FF).withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.slideshow,
+                  color: Color(0xFF1565FF), size: 32),
+            ),
+            const SizedBox(width: 20),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Manage Onboarding Slides',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF1B2559),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Edit welcome screen images & text',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                ],
               ),
             ),
+            const Icon(Icons.arrow_forward_ios, color: Color(0xFF1565FF)),
           ],
         ),
       ),

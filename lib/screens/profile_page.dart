@@ -1,9 +1,25 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../services/supabase_service.dart'; // Adjust path if needed
+import 'package:connectivity_plus/connectivity_plus.dart'; // for offline check
+
+import '../services/supabase_service.dart';
+import 'home_page.dart'; // if needed for navigation
+
+// Helper: Check internet (reuse from before)
+Future<bool> isConnected() async {
+  try {
+    final result = await Connectivity().checkConnectivity();
+    return result != ConnectivityResult.none;
+  } catch (_) {
+    return false;
+  }
+}
 
 class ProfilePage extends StatefulWidget {
-  const ProfilePage({Key? key}) : super(key: key);
+  final String? currentUserId; // ← Changed to nullable (guest support)
+
+  const ProfilePage({Key? key, this.currentUserId}) : super(key: key);
 
   @override
   State<ProfilePage> createState() => _ProfilePageState();
@@ -12,6 +28,7 @@ class ProfilePage extends StatefulWidget {
 class _ProfilePageState extends State<ProfilePage> {
   final SupabaseService _service = SupabaseService();
   final supabase = Supabase.instance.client;
+
   String _userName = 'Loading...';
   String _userEmail = 'Loading...';
   int _visitedCount = 0;
@@ -20,25 +37,52 @@ class _ProfilePageState extends State<ProfilePage> {
   @override
   void initState() {
     super.initState();
-    _fetchUserData();
+
+    // Guest check - skip loading
+    if (widget.currentUserId == null) {
+      setState(() {
+        _userName = 'Guest';
+        _userEmail = 'Not logged in';
+        _visitedCount = 0;
+        _isLoading = false;
+      });
+    } else {
+      _fetchUserData();
+    }
   }
 
   Future<void> _fetchUserData() async {
+    if (widget.currentUserId == null || !mounted) return;
+
+    setState(() => _isLoading = true);
+
+    // Check internet first
+    if (!await isConnected()) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content:
+                Text("No internet connection. Profile data may be outdated."),
+            duration: Duration(seconds: 5),
+          ),
+        );
+      }
+      setState(() => _isLoading = false);
+      return;
+    }
+
     try {
       final user = supabase.auth.currentUser;
       if (user == null) {
-        print('No authenticated user found');
-        if (mounted) {
-          setState(() {
-            _userName = 'Guest';
-            _userEmail = 'Not logged in';
-            _isLoading = false;
-          });
-        }
+        setState(() {
+          _userName = 'Not logged in';
+          _userEmail = 'Guest mode';
+          _isLoading = false;
+        });
         return;
       }
-      print('Loading profile for user: ${user.id} (${user.email})');
-      // Fetch profile (no avatar_url column)
+
+      // Fetch profile
       final profileResponse = await supabase
           .from('users')
           .select('full_name, email')
@@ -64,12 +108,15 @@ class _ProfilePageState extends State<ProfilePage> {
         });
       }
     } catch (e) {
-      print('Profile fetch error: $e');
+      debugPrint('Profile fetch error: $e');
       if (mounted) {
-        setState(() => _isLoading = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not load profile: $e')),
+          const SnackBar(
+            content: Text("Couldn't load profile right now. Try again later."),
+            backgroundColor: Colors.red,
+          ),
         );
+        setState(() => _isLoading = false);
       }
     }
   }
@@ -79,6 +126,8 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   void _showEditProfileDialog() {
+    if (widget.currentUserId == null) return;
+
     final nameController = TextEditingController(text: _userName);
     showDialog(
       context: context,
@@ -104,29 +153,39 @@ class _ProfilePageState extends State<ProfilePage> {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("Cancel"),
+          ),
           ElevatedButton(
             onPressed: () async {
               final newName = nameController.text.trim();
               if (newName.isEmpty || newName == _userName) return;
+
               try {
                 final user = supabase.auth.currentUser;
                 await supabase
                     .from('users')
                     .update({'full_name': newName}).eq('id', user!.id);
+
                 if (mounted) {
                   setState(() => _userName = newName);
                   Navigator.pop(ctx);
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                        content: Text("Name updated successfully!"),
-                        backgroundColor: Colors.green),
+                      content: Text("Name updated successfully!"),
+                      backgroundColor: Colors.green,
+                    ),
                   );
                 }
               } catch (e) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Update failed: $e')),
-                );
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("Couldn't update name. Try again."),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
               }
             },
             child: const Text("Save"),
@@ -136,7 +195,6 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // ─── Logout now goes directly to onboarding ─────────────────────
   void _handleLogout() {
     showDialog(
       context: context,
@@ -152,18 +210,19 @@ class _ProfilePageState extends State<ProfilePage> {
             onPressed: () async {
               Navigator.pop(context); // close dialog
               try {
-                // Sign out from Supabase (this clears the session)
                 await supabase.auth.signOut();
-                // Navigate to onboarding (root route '/')
                 if (mounted) {
                   Navigator.pushNamedAndRemoveUntil(
-                      context, '/', (route) => false);
+                    context,
+                    '/', // back to onboarding
+                    (route) => false,
+                  );
                 }
               } catch (e) {
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Logout failed: $e'),
+                    const SnackBar(
+                      content: Text("Logout failed. Try again."),
                       backgroundColor: Colors.red,
                     ),
                   );
@@ -179,6 +238,61 @@ class _ProfilePageState extends State<ProfilePage> {
 
   @override
   Widget build(BuildContext context) {
+    // Guest mode: friendly sign-in screen
+    if (widget.currentUserId == null) {
+      return Scaffold(
+        backgroundColor: const Color(0xFFF4F7FE),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.person_outline_rounded,
+                    size: 100, color: Colors.blueGrey),
+                const SizedBox(height: 24),
+                const Text(
+                  "Welcome, Traveler!",
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1565FF),
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  "Sign in to access your profile, view your visited places, update your name, and save your travel preferences.",
+                  style: TextStyle(fontSize: 16, color: Colors.grey),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 32),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.login),
+                  label: const Text("Sign In / Register"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1565FF),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 32, vertical: 16),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                  onPressed: () => Navigator.pushNamed(context, '/login'),
+                ),
+                const SizedBox(height: 16),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text("Continue browsing as guest"),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // Logged-in user UI
     return Scaffold(
       backgroundColor: const Color(0xFFF4F7FE),
       body: RefreshIndicator(
@@ -189,7 +303,7 @@ class _ProfilePageState extends State<ProfilePage> {
                 physics: const AlwaysScrollableScrollPhysics(),
                 child: Column(
                   children: [
-                    // Header with gradient background
+                    // Header with gradient
                     Stack(
                       clipBehavior: Clip.none,
                       children: [
@@ -248,7 +362,8 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                           ),
                         ),
-                        // Floating stats card
+
+                        // Floating stats
                         Positioned(
                           bottom: -40,
                           left: 20,
@@ -290,11 +405,12 @@ class _ProfilePageState extends State<ProfilePage> {
                       ],
                     ),
                     const SizedBox(height: 60),
+
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 20),
                       child: Column(
                         children: [
-                          // Stats Card (duplicate for visual balance - optional)
+                          // Stats section (optional duplicate)
                           Container(
                             width: double.infinity,
                             padding: const EdgeInsets.all(20),
@@ -304,9 +420,10 @@ class _ProfilePageState extends State<ProfilePage> {
                               borderRadius: BorderRadius.circular(20),
                               boxShadow: [
                                 BoxShadow(
-                                    color: Colors.grey.withOpacity(0.05),
-                                    blurRadius: 10,
-                                    offset: const Offset(0, 4)),
+                                  color: Colors.grey.withOpacity(0.05),
+                                  blurRadius: 10,
+                                  offset: const Offset(0, 4),
+                                ),
                               ],
                             ),
                             child: Column(
@@ -314,9 +431,10 @@ class _ProfilePageState extends State<ProfilePage> {
                                 const Text(
                                   'Your Stats',
                                   style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold,
-                                      color: Color(0xFF1B2559)),
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF1B2559),
+                                  ),
                                 ),
                                 const SizedBox(height: 16),
                                 Row(
@@ -337,6 +455,7 @@ class _ProfilePageState extends State<ProfilePage> {
                               ],
                             ),
                           ),
+
                           // Preferences placeholder
                           Container(
                             width: double.infinity,
@@ -346,9 +465,10 @@ class _ProfilePageState extends State<ProfilePage> {
                               borderRadius: BorderRadius.circular(20),
                               boxShadow: [
                                 BoxShadow(
-                                    color: Colors.grey.withOpacity(0.05),
-                                    blurRadius: 10,
-                                    offset: const Offset(0, 4)),
+                                  color: Colors.grey.withOpacity(0.05),
+                                  blurRadius: 10,
+                                  offset: const Offset(0, 4),
+                                ),
                               ],
                             ),
                             child: Column(
@@ -362,9 +482,10 @@ class _ProfilePageState extends State<ProfilePage> {
                                     Text(
                                       'Travel Preferences',
                                       style: TextStyle(
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.bold,
-                                          color: Color(0xFF1B2559)),
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF1B2559),
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -388,6 +509,7 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                           ),
                           const SizedBox(height: 20),
+
                           // Settings list
                           Container(
                             decoration: BoxDecoration(
@@ -395,9 +517,10 @@ class _ProfilePageState extends State<ProfilePage> {
                               borderRadius: BorderRadius.circular(20),
                               boxShadow: [
                                 BoxShadow(
-                                    color: Colors.grey.withOpacity(0.05),
-                                    blurRadius: 10,
-                                    offset: const Offset(0, 4)),
+                                  color: Colors.grey.withOpacity(0.05),
+                                  blurRadius: 10,
+                                  offset: const Offset(0, 4),
+                                ),
                               ],
                             ),
                             child: Column(
@@ -412,28 +535,38 @@ class _ProfilePageState extends State<ProfilePage> {
                                       Text(
                                         'Settings',
                                         style: TextStyle(
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.bold,
-                                            color: Color(0xFF1B2559)),
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                          color: Color(0xFF1B2559),
+                                        ),
                                       ),
                                     ],
                                   ),
                                 ),
                                 const Divider(height: 1),
                                 _buildSettingsItem(
-                                    Icons.person_outline, 'Edit Profile',
-                                    onTap: _showEditProfileDialog),
+                                  Icons.person_outline,
+                                  'Edit Profile',
+                                  onTap: _showEditProfileDialog,
+                                ),
                                 const Divider(height: 1),
                                 _buildSettingsItem(
-                                    Icons.favorite_border, 'Manage Preferences',
-                                    onTap: () {}),
+                                  Icons.favorite_border,
+                                  'Manage Preferences',
+                                  onTap: () {},
+                                ),
                                 const Divider(height: 1),
                                 _buildSettingsItem(
-                                    Icons.location_on, 'Location Settings',
-                                    onTap: () {}),
+                                  Icons.location_on,
+                                  'Location Settings',
+                                  onTap: () {},
+                                ),
                                 const Divider(height: 1),
-                                _buildSettingsItem(Icons.logout, 'Log Out',
-                                    onTap: _handleLogout),
+                                _buildSettingsItem(
+                                  Icons.logout,
+                                  'Log Out',
+                                  onTap: _handleLogout,
+                                ),
                               ],
                             ),
                           ),
@@ -455,16 +588,24 @@ class _ProfilePageState extends State<ProfilePage> {
         Container(
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
-              color: color.withOpacity(0.1), shape: BoxShape.circle),
+            color: color.withOpacity(0.1),
+            shape: BoxShape.circle,
+          ),
           child: Icon(icon, color: color, size: 20),
         ),
         const SizedBox(height: 6),
-        Text(value,
-            style: const TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-                color: Color(0xFF1B2559))),
-        Text(label, style: TextStyle(color: Colors.grey[500], fontSize: 11)),
+        Text(
+          value,
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 16,
+            color: Color(0xFF1B2559),
+          ),
+        ),
+        Text(
+          label,
+          style: TextStyle(color: Colors.grey[500], fontSize: 11),
+        ),
       ],
     );
   }
@@ -475,15 +616,20 @@ class _ProfilePageState extends State<ProfilePage> {
       contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
       leading: Container(
         padding: const EdgeInsets.all(8),
-        decoration:
-            BoxDecoration(color: Colors.grey[100], shape: BoxShape.circle),
+        decoration: BoxDecoration(
+          color: Colors.grey[100],
+          shape: BoxShape.circle,
+        ),
         child: Icon(icon, color: Colors.grey[700], size: 20),
       ),
-      title: Text(title,
-          style: TextStyle(
-              color: Colors.grey[800],
-              fontWeight: FontWeight.w600,
-              fontSize: 15)),
+      title: Text(
+        title,
+        style: TextStyle(
+          color: Colors.grey[800],
+          fontWeight: FontWeight.w600,
+          fontSize: 15,
+        ),
+      ),
       trailing:
           Icon(Icons.arrow_forward_ios, size: 14, color: Colors.grey[400]),
       onTap: onTap,

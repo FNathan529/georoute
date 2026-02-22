@@ -1,21 +1,21 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter_application_1/screens/destination_detail.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'destination_detail.dart';
 import '../utils/distance_calculator.dart';
 import '../services/supabase_service.dart';
-import 'destination_detail.dart'; // ← Make sure this import exists
-import 'home_page.dart'; // if needed for navigation
+
+import 'home_page.dart';
 
 class BucketListPage extends StatefulWidget {
-  final String currentUserId;
+  final String? currentUserId;
   final Map<String, dynamic>? initialLocation;
 
   const BucketListPage({
     super.key,
-    required this.currentUserId,
+    this.currentUserId,
     this.initialLocation,
   });
 
@@ -30,7 +30,6 @@ class _BucketListPageState extends State<BucketListPage>
   bool _isLoading = true;
   bool _isSaving = false;
 
-  // Visited status cache
   Set<String> _visitedIds = {};
 
   double get completionPercentage {
@@ -54,19 +53,36 @@ class _BucketListPageState extends State<BucketListPage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadBucketList();
-    _loadVisitedIds();
 
-    if (widget.initialLocation != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _addToBucket(widget.initialLocation!);
-      });
+    if (widget.currentUserId == null) {
+      setState(() => _isLoading = false);
+      if (widget.initialLocation != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text("Sign in to save this to your Bucket List!"),
+                duration: Duration(seconds: 4),
+              ),
+            );
+          }
+        });
+      }
+    } else {
+      _loadBucketList();
+      _loadVisitedIds();
+
+      if (widget.initialLocation != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _addToBucket(widget.initialLocation!);
+        });
+      }
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.resumed && widget.currentUserId != null) {
       _loadBucketList();
       _loadVisitedIds();
     }
@@ -79,6 +95,8 @@ class _BucketListPageState extends State<BucketListPage>
   }
 
   Future<void> _loadVisitedIds() async {
+    if (widget.currentUserId == null) return;
+
     try {
       final user = Supabase.instance.client.auth.currentUser;
       if (user == null) return;
@@ -88,21 +106,24 @@ class _BucketListPageState extends State<BucketListPage>
           .select('destination_id')
           .eq('user_id', user.id);
 
-      setState(() {
-        _visitedIds =
-            res.map((row) => row['destination_id'].toString()).toSet();
-      });
+      if (mounted) {
+        setState(() {
+          _visitedIds =
+              res.map((row) => row['destination_id'].toString()).toSet();
+        });
+      }
     } catch (e) {
       debugPrint('Error loading visited IDs: $e');
     }
   }
 
   Future<void> _loadBucketList() async {
-    if (!mounted) return;
+    if (widget.currentUserId == null || !mounted) return;
+
     setState(() => _isLoading = true);
 
     try {
-      final data = await _service.getTripPlan(widget.currentUserId);
+      final data = await _service.getTripPlan(widget.currentUserId!);
       if (mounted) {
         setState(() {
           _bucketList = List<Map<String, dynamic>>.from(data);
@@ -110,71 +131,139 @@ class _BucketListPageState extends State<BucketListPage>
         });
       }
     } catch (e) {
-      setState(() => _isLoading = false);
+      debugPrint('Error loading bucket list: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text('Error loading bucket list: $e'),
-              backgroundColor: Colors.red),
+            content: const Text("Couldn't load bucket list. Check connection."),
+            backgroundColor: Colors.red,
+            action: SnackBarAction(label: 'Retry', onPressed: _loadBucketList),
+          ),
         );
       }
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<bool> _isAlreadyInBucket(String destId) async {
+    if (widget.currentUserId == null) return false;
+
+    try {
+      final response = await Supabase.instance.client
+          .from('trip_plans')
+          .select('destination_id')
+          .eq('user_id', widget.currentUserId!)
+          .eq('destination_id', destId)
+          .maybeSingle();
+
+      return response != null;
+    } catch (e) {
+      debugPrint('Duplicate check error: $e');
+      return false;
     }
   }
 
   Future<void> _addToBucket(Map<String, dynamic> data) async {
+    if (widget.currentUserId == null) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("Sign in to save"),
+          content: const Text(
+              "You need to be logged in to add places to your Bucket List."),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text("Cancel")),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                Navigator.pushNamed(context, '/login');
+              },
+              child: const Text("Sign In"),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    if (_isSaving) return;
+    setState(() => _isSaving = true);
+
     final destId = data['id']?.toString();
     if (destId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Cannot add: Missing destination ID'),
-            backgroundColor: Colors.red),
+        const SnackBar(content: Text('Cannot add: Missing destination ID')),
       );
+      setState(() => _isSaving = false);
+      return;
+    }
+
+    final alreadyExists = await _isAlreadyInBucket(destId);
+    if (alreadyExists ||
+        _bucketList
+            .any((item) => item['destination_id'].toString() == destId)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Already in your Bucket List!')),
+      );
+      setState(() => _isSaving = false);
       return;
     }
 
     final newItem = {
       'destination_id': destId,
       'name': data['name'] ?? 'Dream Spot',
-      'type': data['type'] ?? 'Unknown',
-      'distance': data['distance'] ?? 'N/A',
-      'duration': data['duration'] ?? 'N/A',
-      'cost': data['cost'] ?? data['price_range'] ?? '₱ – ',
-      'image': data['image_url'] ??
+      'category': data['category'] ?? 'Unknown',
+      'location': data['location'] ?? 'N/A',
+      'travel_time': data['travel_time'] ?? 'N/A',
+      'price_range': data['price_range'] ?? '₱ – ',
+      'image_url': data['image_url'] ??
           data['image'] ??
           'https://via.placeholder.com/400x225',
       'latitude': data['latitude'],
       'longitude': data['longitude'],
+      'description': data['description'] ?? 'No description available.',
+      'attractions': data['attractions'] ?? '',
+      'activities': data['activities'] ?? '',
+      'accommodation': data['accommodation'] ?? 'No accommodation info.',
       'order_index': _bucketList.length,
-      // Add more fields if your DestinationDetailPage needs them
-      'description': data['description'],
-      'attractions': data['attractions'],
-      'activities': data['activities'],
-      'accommodation': data['accommodation'],
     };
 
     setState(() => _bucketList.add(newItem));
 
     try {
       await _service.addToPlan(
-        userId: widget.currentUserId,
+        userId: widget.currentUserId!,
         destination: newItem,
         orderIndex: _bucketList.length - 1,
       );
 
       await _loadBucketList();
+
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${newItem['name']} added to bucket list!')),
+        SnackBar(
+          content: Text('${newItem['name']} added!'),
+          backgroundColor: Colors.green,
+        ),
       );
     } catch (e) {
+      debugPrint('Add error: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
             content: Text('Failed to save: $e'), backgroundColor: Colors.red),
       );
       setState(() => _bucketList.removeLast());
+    } finally {
+      setState(() => _isSaving = false);
     }
   }
 
+  // NEW: Fetch full destination data from Supabase and open detail page
+
   Future<void> _markAsVisited(int index) async {
+    if (widget.currentUserId == null) return;
+
     final item = _bucketList[index];
 
     if (_visitedIds.contains(item['destination_id'].toString())) return;
@@ -192,8 +281,8 @@ class _BucketListPageState extends State<BucketListPage>
         userId: user.id,
         destinationId: item['destination_id'].toString(),
         destinationName: item['name'],
-        note: null,
-        rating: null,
+        imageUrl: item['image_url'] ?? 'https://via.placeholder.com/400x225',
+        category: item['category'] ?? 'Unknown',
       );
 
       setState(() {
@@ -202,35 +291,43 @@ class _BucketListPageState extends State<BucketListPage>
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-            content: Text('${item['name']} marked as visited! 🌟'),
-            backgroundColor: Colors.green),
+          content: Text('${item['name']} marked as visited! 🌟'),
+          backgroundColor: Colors.green,
+        ),
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed: $e'), backgroundColor: Colors.red),
+        SnackBar(
+            content: Text('Failed to mark visited'),
+            backgroundColor: Colors.red),
       );
     }
   }
 
   Future<void> _removeAt(int index) async {
+    if (widget.currentUserId == null) return;
+
     final removed = _bucketList[index];
 
     setState(() => _bucketList.removeAt(index));
 
     try {
-      await _service.updatePlan(widget.currentUserId, _bucketList);
+      await _service.updatePlan(widget.currentUserId!, _bucketList);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('${removed['name']} removed')),
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-            content: Text('Error removing: $e'), backgroundColor: Colors.red),
+            content: Text('Error removing item'), backgroundColor: Colors.red),
       );
+      setState(() => _bucketList.insert(index, removed));
     }
   }
 
   Future<void> _clearAll() async {
+    if (widget.currentUserId == null) return;
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -251,7 +348,7 @@ class _BucketListPageState extends State<BucketListPage>
     if (confirm != true) return;
 
     setState(() => _bucketList.clear());
-    await _service.clearPlan(widget.currentUserId);
+    await _service.clearPlan(widget.currentUserId!);
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Bucket list cleared')),
     );
@@ -261,6 +358,57 @@ class _BucketListPageState extends State<BucketListPage>
   Widget build(BuildContext context) {
     final top = MediaQuery.of(context).padding.top;
     final screenWidth = MediaQuery.of(context).size.width;
+
+    if (widget.currentUserId == null) {
+      return Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.favorite_border_outlined,
+                    size: 100, color: Colors.blueGrey),
+                const SizedBox(height: 24),
+                const Text(
+                  "Your Bucket List is waiting!",
+                  style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF1565FF)),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  "Sign in to save your favorite spots in Misamis Oriental, plan trips, and track your adventures.",
+                  style: TextStyle(fontSize: 16, color: Colors.grey),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 32),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.login),
+                  label: const Text("Sign In / Register"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1565FF),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 32, vertical: 16),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                  onPressed: () => Navigator.pushNamed(context, '/login'),
+                ),
+                const SizedBox(height: 16),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text("Continue browsing as guest"),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FF),
@@ -311,13 +459,14 @@ class _BucketListPageState extends State<BucketListPage>
             ),
           ),
           Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _bucketList.isEmpty
-                    ? _buildEmptyState()
-                    : RefreshIndicator(
-                        onRefresh: _loadBucketList,
-                        child: ListView(
+            child: RefreshIndicator(
+              onRefresh: _loadBucketList,
+              color: const Color(0xFF1565FF),
+              child: _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _bucketList.isEmpty
+                      ? _buildEmptyState()
+                      : ListView(
                           padding: const EdgeInsets.all(16),
                           children: [
                             _buildProgressCard(screenWidth),
@@ -338,30 +487,18 @@ class _BucketListPageState extends State<BucketListPage>
 
                               return GestureDetector(
                                 onTap: () {
-                                  // Navigate to DestinationDetailPage
-                                  final destinationData = {
-                                    'id': item['destination_id'],
-                                    'name': item['name'],
-                                    'category': item['type'] ?? 'Unknown',
-                                    'image_url': item['image'],
-                                    'latitude': item['latitude'],
-                                    'longitude': item['longitude'],
-                                    'description': item['description'] ??
-                                        'No description available.',
-                                    // Add more fields if available in your trip_plans table
-                                    // or fetch full data if needed
-                                  };
+                                  final destinationId =
+                                      item['destination_id']?.toString();
+                                  if (destinationId == null) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                          content: Text('Invalid destination')),
+                                    );
+                                    return;
+                                  }
 
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) =>
-                                          DestinationDetailPage(
-                                        destination: destinationData,
-                                        currentUserId: widget.currentUserId,
-                                      ),
-                                    ),
-                                  );
+                                  // Open full DestinationDetailPage with real data fetch
+                                  _openDestinationDetail(destinationId);
                                 },
                                 child: Dismissible(
                                   key: ValueKey(
@@ -392,7 +529,7 @@ class _BucketListPageState extends State<BucketListPage>
                                             fit: StackFit.expand,
                                             children: [
                                               Image.network(
-                                                item['image'] ??
+                                                item['image_url'] ??
                                                     'https://via.placeholder.com/400x225',
                                                 fit: BoxFit.cover,
                                                 errorBuilder: (_, __, ___) =>
@@ -445,14 +582,16 @@ class _BucketListPageState extends State<BucketListPage>
                                                       color: Colors.grey[600]),
                                                   const SizedBox(width: 6),
                                                   Text(
-                                                    item['type'] ?? 'Unknown',
+                                                    item['category'] ??
+                                                        'Unknown',
                                                     style: TextStyle(
                                                         color: Colors.grey[700],
                                                         fontSize: 13),
                                                   ),
                                                   const Spacer(),
                                                   Text(
-                                                    item['cost'] ?? '—',
+                                                    item['price_range'] ??
+                                                        '₱ – ',
                                                     style: const TextStyle(
                                                         color: Colors.green,
                                                         fontWeight:
@@ -503,7 +642,7 @@ class _BucketListPageState extends State<BucketListPage>
                             const SizedBox(height: 100),
                           ],
                         ),
-                      ),
+            ),
           ),
         ],
       ),
@@ -520,10 +659,41 @@ class _BucketListPageState extends State<BucketListPage>
         },
         icon: const Icon(Icons.add),
         label: const Text('Add More Spots'),
-        backgroundColor: const Color(0xFF0000FF), //0xFF0000FF
+        backgroundColor: const Color(0xFF1565FF),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
     );
+  }
+
+  // NEW: Fetch full destination from Supabase and open detail page
+  Future<void> _openDestinationDetail(String destinationId) async {
+    try {
+      final fullDestination = await Supabase.instance.client
+          .from('destinations')
+          .select('*')
+          .eq('id', destinationId)
+          .single();
+
+      if (!mounted) return;
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => DestinationDetailPage(
+            destination: fullDestination,
+            currentUserId: widget.currentUserId,
+          ),
+        ),
+      );
+    } catch (e) {
+      debugPrint('Error opening destination detail: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not load destination details'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   Widget _buildProgressCard(double screenWidth) {
@@ -561,14 +731,14 @@ class _BucketListPageState extends State<BucketListPage>
                     strokeWidth: 10,
                     backgroundColor: Colors.grey[200],
                     valueColor:
-                        const AlwaysStoppedAnimation<Color>(Color(0xFF0000FF)),
+                        const AlwaysStoppedAnimation<Color>(Color(0xFF1565FF)),
                   ),
                   Text(
                     '${(completionPercentage * 100).toStringAsFixed(0)}%',
                     style: const TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.bold,
-                        color: Color(0xFF0000FF)),
+                        color: Color(0xFF1565FF)),
                   ),
                 ],
               ),
@@ -594,7 +764,7 @@ class _BucketListPageState extends State<BucketListPage>
               style: TextStyle(
                   fontSize: 24,
                   fontWeight: FontWeight.bold,
-                  color: Color(0xFF0000FF)),
+                  color: Color(0xFF1565FF)),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 12),
@@ -608,8 +778,8 @@ class _BucketListPageState extends State<BucketListPage>
               icon: const Icon(Icons.explore),
               label: const Text('Discover Spots'),
               style: OutlinedButton.styleFrom(
-                foregroundColor: const Color(0xFF0000FF),
-                side: const BorderSide(color: Color(0xFF0000FF)),
+                foregroundColor: const Color(0xFF1565FF),
+                side: const BorderSide(color: Color(0xFF1565FF)),
                 padding:
                     const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
               ),
@@ -617,9 +787,8 @@ class _BucketListPageState extends State<BucketListPage>
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (context) =>
-                        HomePage(currentUserId: widget.currentUserId),
-                  ),
+                      builder: (context) =>
+                          HomePage(currentUserId: widget.currentUserId)),
                 );
               },
             ),

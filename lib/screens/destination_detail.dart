@@ -12,12 +12,12 @@ import 'map_page.dart';
 
 class DestinationDetailPage extends StatefulWidget {
   final Map<String, dynamic> destination;
-  final String currentUserId;
+  final String? currentUserId;
 
   const DestinationDetailPage({
     super.key,
     required this.destination,
-    required this.currentUserId,
+    this.currentUserId,
   });
 
   @override
@@ -26,10 +26,6 @@ class DestinationDetailPage extends StatefulWidget {
 
 class _DestinationDetailPageState extends State<DestinationDetailPage> {
   final SupabaseService _service = SupabaseService();
-
-  final _noteController = TextEditingController();
-  double _personalRating = 5.0;
-  bool _isSavingVisit = false;
 
   double _avgRating = 0.0;
   int _ratingCount = 0;
@@ -45,6 +41,8 @@ class _DestinationDetailPageState extends State<DestinationDetailPage> {
   String _distanceText = 'Calculating distance...';
 
   StreamSubscription<List<Map<String, dynamic>>>? _commentSubscription;
+
+  bool _showAllReviews = false;
 
   @override
   void initState() {
@@ -63,6 +61,39 @@ class _DestinationDetailPageState extends State<DestinationDetailPage> {
             _loadCommentsAndRating();
           });
     }
+  }
+
+  void _showLoginRequiredDialog(String action) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text("Sign in to continue"),
+        content: Text(
+          "To $action you need to be signed in.\n\n"
+          "Log in or create an account to save favorites, leave reviews, and build your personal travel story in Misamis Oriental.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text("Maybe later"),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.login),
+            label: const Text("Sign In / Register"),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1565FF),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            ),
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              Navigator.pushNamed(context, '/login');
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _loadCommentsAndRating() async {
@@ -92,10 +123,15 @@ class _DestinationDetailPageState extends State<DestinationDetailPage> {
   }
 
   Future<void> _postPublicComment() async {
+    if (widget.currentUserId == null) {
+      _showLoginRequiredDialog("post a review or rating");
+      return;
+    }
+
     final comment = _commentController.text.trim();
     if (comment.isEmpty && _publicRating == 0.0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Add a comment or rating')),
+        const SnackBar(content: Text('Please add a comment or rating')),
       );
       return;
     }
@@ -124,11 +160,48 @@ class _DestinationDetailPageState extends State<DestinationDetailPage> {
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-            content: Text('Failed to post: $e'), backgroundColor: Colors.red),
+            content: Text('Failed to post review: $e'),
+            backgroundColor: Colors.red),
       );
     } finally {
       setState(() => _isPostingComment = false);
     }
+  }
+
+  void _addToBucketList() {
+    if (widget.currentUserId == null) {
+      _showLoginRequiredDialog("add this destination to your bucket list");
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => BucketListPage(
+          currentUserId: widget.currentUserId!,
+          initialLocation: widget.destination,
+        ),
+      ),
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+          content: Text('Added to your Bucket List!'),
+          backgroundColor: Colors.green),
+    );
+  }
+
+  void _startNavigation() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => MapPage(
+          currentUserId: widget.currentUserId,
+          initialDestination: widget.destination,
+          autoStartNavigation: true,
+        ),
+      ),
+    );
   }
 
   Future<void> _getUserLocation() async {
@@ -187,78 +260,8 @@ class _DestinationDetailPageState extends State<DestinationDetailPage> {
     }
   }
 
-  Future<void> _markAsVisited() async {
-    setState(() => _isSavingVisit = true);
-
-    try {
-      final String? destId = widget.destination['id']?.toString();
-      final String? destName = widget.destination['name']?.toString();
-
-      if (destId == null || destId.isEmpty)
-        throw Exception('Missing destination ID');
-
-      await _service.addToHistory(
-        userId: widget.currentUserId,
-        destinationId: destId,
-        destinationName: destName ?? 'Unknown',
-        note: _noteController.text.trim().isEmpty
-            ? null
-            : _noteController.text.trim(),
-        rating: _personalRating,
-      );
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Marked as visited! Added to travel history.'),
-            backgroundColor: Colors.green),
-      );
-
-      _noteController.clear();
-      setState(() => _personalRating = 5.0);
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('Failed to save: $e'), backgroundColor: Colors.red),
-      );
-    } finally {
-      setState(() => _isSavingVisit = false);
-    }
-  }
-
-  void _addToBucketList() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => BucketListPage(
-          currentUserId: widget.currentUserId,
-          initialLocation: widget.destination,
-        ),
-      ),
-    );
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-          content: Text('Added to your Bucket List!'),
-          backgroundColor: Colors.green),
-    );
-  }
-
-  void _startNavigation() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => MapPage(
-          currentUserId: widget.currentUserId,
-          initialDestination: widget.destination,
-          autoStartNavigation: true, // ← This triggers auto navigation
-        ),
-      ),
-    );
-  }
-
   @override
   void dispose() {
-    _noteController.dispose();
     _commentController.dispose();
     _commentSubscription?.cancel();
     super.dispose();
@@ -285,7 +288,8 @@ class _DestinationDetailPageState extends State<DestinationDetailPage> {
         [];
     final accommodation =
         dest['accommodation'] as String? ?? 'No accommodation information.';
-    final bool isLoggedIn = Supabase.instance.client.auth.currentUser != null;
+
+    final bool isLoggedIn = widget.currentUserId != null;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF4F7FE),
@@ -387,6 +391,7 @@ class _DestinationDetailPageState extends State<DestinationDetailPage> {
                   Text(accommodation, style: const TextStyle(fontSize: 15)),
                   const SizedBox(height: 32),
 
+                  // ─── COMMUNITY REVIEWS ────────────────────────────────────────
                   const Text('Community Reviews',
                       style:
                           TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
@@ -403,59 +408,114 @@ class _DestinationDetailPageState extends State<DestinationDetailPage> {
                       ),
                     )
                   else
-                    ListView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: _comments.length,
-                      itemBuilder: (context, index) {
-                        final c = _comments[index];
-                        final userName =
-                            c['users']?['full_name'] as String? ?? 'Anonymous';
-                        final dateStr = c['created_at'] as String?;
-                        final date = dateStr != null
-                            ? DateFormat('MMM d, yyyy • h:mm a')
-                                .format(DateTime.parse(dateStr).toLocal())
-                            : 'Unknown date';
-                        final rating = c['rating'] as num?;
+                    Builder(
+                      builder: (context) {
+                        final sortedComments =
+                            List<Map<String, dynamic>>.from(_comments)
+                              ..sort((a, b) {
+                                final dateA =
+                                    DateTime.tryParse(a['created_at'] ?? '') ??
+                                        DateTime(2000);
+                                final dateB =
+                                    DateTime.tryParse(b['created_at'] ?? '') ??
+                                        DateTime(2000);
+                                return dateB.compareTo(dateA);
+                              });
 
-                        return Card(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12)),
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Text(userName,
-                                        style: const TextStyle(
-                                            fontWeight: FontWeight.bold)),
-                                    Text(date,
-                                        style: const TextStyle(
-                                            color: Colors.grey, fontSize: 12)),
-                                  ],
-                                ),
-                                if (rating != null) ...[
-                                  const SizedBox(height: 8),
-                                  RatingBarIndicator(
-                                    rating: rating.toDouble(),
-                                    itemBuilder: (context, _) => const Icon(
-                                        Icons.star,
-                                        color: Colors.amber),
-                                    itemCount: 5,
-                                    itemSize: 20,
+                        final visibleComments = _showAllReviews
+                            ? sortedComments
+                            : sortedComments.take(2).toList();
+
+                        return Column(
+                          children: [
+                            ...visibleComments.map((c) {
+                              final rawName =
+                                  c['users']?['full_name'] as String?;
+                              final maskedName = _maskUsername(rawName);
+                              final dateStr = c['created_at'] as String?;
+                              final date = dateStr != null
+                                  ? DateFormat('MMM d, yyyy • h:mm a')
+                                      .format(DateTime.parse(dateStr).toLocal())
+                                  : 'Unknown date';
+                              final rating = c['rating'] as num?;
+
+                              return Card(
+                                margin: const EdgeInsets.only(bottom: 16),
+                                elevation: 1,
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12)),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Text(
+                                            maskedName,
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                                fontSize: 15),
+                                          ),
+                                          Text(
+                                            date,
+                                            style: TextStyle(
+                                                color: Colors.grey[600],
+                                                fontSize: 12),
+                                          ),
+                                        ],
+                                      ),
+                                      if (rating != null) ...[
+                                        const SizedBox(height: 8),
+                                        RatingBarIndicator(
+                                          rating: rating.toDouble(),
+                                          itemBuilder: (context, _) =>
+                                              const Icon(Icons.star,
+                                                  color: Colors.amber),
+                                          itemCount: 5,
+                                          itemSize: 20,
+                                        ),
+                                      ],
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        c['comment_text'] as String? ?? '',
+                                        style: const TextStyle(height: 1.4),
+                                      ),
+                                    ],
                                   ),
-                                ],
-                                const SizedBox(height: 8),
-                                Text(c['comment_text'] as String? ?? '',
-                                    style: const TextStyle(height: 1.4)),
-                              ],
-                            ),
-                          ),
+                                ),
+                              );
+                            }).toList(),
+                            if (sortedComments.length > 2)
+                              Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 16),
+                                child: TextButton.icon(
+                                  onPressed: () {
+                                    setState(() =>
+                                        _showAllReviews = !_showAllReviews);
+                                  },
+                                  icon: Icon(
+                                    _showAllReviews
+                                        ? Icons.expand_less
+                                        : Icons.expand_more,
+                                    color: const Color(0xFF1565FF),
+                                  ),
+                                  label: Text(
+                                    _showAllReviews
+                                        ? 'See fewer reviews'
+                                        : 'See more reviews (${sortedComments.length - 2})',
+                                    style: const TextStyle(
+                                      color: Color(0xFF1565FF),
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
                         );
                       },
                     ),
@@ -463,9 +523,49 @@ class _DestinationDetailPageState extends State<DestinationDetailPage> {
                   const SizedBox(height: 32),
 
                   if (!isLoggedIn)
-                    const Center(
-                        child: Text('Log in to leave a review',
-                            style: TextStyle(color: Colors.grey)))
+                    Card(
+                      elevation: 3,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16)),
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          children: [
+                            const Icon(Icons.lock_outline_rounded,
+                                size: 56, color: Colors.blueGrey),
+                            const SizedBox(height: 16),
+                            const Text(
+                              "Want to share your experience?",
+                              style: TextStyle(
+                                  fontSize: 20, fontWeight: FontWeight.bold),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              "Sign in to rate this place, write a review, and help other travelers discover the best spots in Misamis Oriental!",
+                              textAlign: TextAlign.center,
+                              style:
+                                  TextStyle(color: Colors.grey, fontSize: 15),
+                            ),
+                            const SizedBox(height: 24),
+                            ElevatedButton.icon(
+                              icon: const Icon(Icons.login),
+                              label: const Text("Sign In / Create Account"),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF1565FF),
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 32, vertical: 14),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12)),
+                              ),
+                              onPressed: () =>
+                                  Navigator.pushNamed(context, '/login'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
                   else
                     Card(
                       elevation: 4,
@@ -542,7 +642,6 @@ class _DestinationDetailPageState extends State<DestinationDetailPage> {
 
                   const SizedBox(height: 32),
 
-                  // START NAVIGATION BUTTON
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
@@ -559,72 +658,7 @@ class _DestinationDetailPageState extends State<DestinationDetailPage> {
                     ),
                   ),
 
-                  const SizedBox(height: 32),
-
-                  const Text('Mark as Visited (Private)',
-                      style:
-                          TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _noteController,
-                    maxLines: 3,
-                    decoration: InputDecoration(
-                      hintText: 'Add a personal note (optional)',
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                      filled: true,
-                      fillColor: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-
-                  Row(
-                    children: [
-                      const Text('Your Rating: ',
-                          style: TextStyle(fontSize: 16)),
-                      Expanded(
-                        child: Slider(
-                          value: _personalRating,
-                          min: 1,
-                          max: 5,
-                          divisions: 4,
-                          label: _personalRating.toStringAsFixed(1),
-                          onChanged: (value) =>
-                              setState(() => _personalRating = value),
-                        ),
-                      ),
-                      Text('$_personalRating ★',
-                          style: const TextStyle(
-                              fontWeight: FontWeight.bold, fontSize: 16)),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      icon: _isSavingVisit
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.bookmark_added,
-                              color: Colors.white),
-                      label: Text(
-                        _isSavingVisit ? 'Saving...' : 'Mark as Visited',
-                        style: const TextStyle(color: Colors.white),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                      ),
-                      onPressed: _isSavingVisit ? null : _markAsVisited,
-                    ),
-                  ),
-
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 40),
 
                   SizedBox(
                     width: double.infinity,
@@ -643,7 +677,7 @@ class _DestinationDetailPageState extends State<DestinationDetailPage> {
                     ),
                   ),
 
-                  const SizedBox(height: 100),
+                  const SizedBox(height: 120),
                 ],
               ),
             ),
@@ -651,5 +685,23 @@ class _DestinationDetailPageState extends State<DestinationDetailPage> {
         ],
       ),
     );
+  }
+
+  // Mask username like "J...h"
+  String _maskUsername(String? fullName) {
+    if (fullName == null || fullName.trim().isEmpty) {
+      return 'Traveler';
+    }
+
+    final name = fullName.trim();
+
+    if (name.length <= 3) {
+      return name;
+    }
+
+    final first = name[0];
+    final last = name[name.length - 1];
+
+    return '$first...$last';
   }
 }

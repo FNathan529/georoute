@@ -4,6 +4,8 @@
 <dict>
 <key>NSLocationWhenInUseUsageDescription</key>
 <string>We need your location to show nearby destinations.</string>
+<key>NSPhotoLibraryUsageDescription</key>
+<string>Allow access to select images for onboarding slides</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
