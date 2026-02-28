@@ -1,10 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'destination_detail.dart';
-import '../utils/distance_calculator.dart';
 import '../services/supabase_service.dart';
 
 import 'home_page.dart';

@@ -4,7 +4,7 @@ import 'package:file_saver/file_saver.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:excel/excel.dart' hide Border;
-import '../services/supabase_service.dart'; // Make sure this path is correct
+import '../services/supabase_service.dart';
 
 class AdminReportsPage extends StatefulWidget {
   const AdminReportsPage({Key? key}) : super(key: key);
@@ -57,7 +57,7 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
   }
 
   // ────────────────────────────────────────────────
-  //  GENERATE REPORT BYTES – NOW WITH REAL DATA
+  //  GENERATE REPORT BYTES – WITH REAL DATA
   // ────────────────────────────────────────────────
   Future<Uint8List> _generateReportBytes(String format) async {
     final timestamp = DateTime.now().toString();
@@ -71,7 +71,6 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
       sheet.appendRow([TextCellValue('Generated: $timestamp')]);
       sheet.appendRow([TextCellValue('')]);
 
-      // Summary
       sheet.appendRow([TextCellValue('SUMMARY STATISTICS')]);
       sheet.appendRow([
         TextCellValue('Metric'),
@@ -102,7 +101,6 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
 
       sheet.appendRow([TextCellValue('')]);
 
-      // Categories
       sheet.appendRow([TextCellValue('CATEGORY STATISTICS')]);
       sheet.appendRow([
         TextCellValue('Category'),
@@ -134,39 +132,32 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
                   level: 0,
                   child: pw.Text(
                     'GeoRoute Analytics Report',
-                    style: pw.TextStyle(
-                        fontSize: 24, fontWeight: pw.FontWeight.bold),
+                    style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold),
                   ),
                 ),
                 pw.Text('Generated: $timestamp'),
                 pw.SizedBox(height: 20),
                 pw.Text(
                   'SUMMARY STATISTICS',
-                  style: pw.TextStyle(
-                      fontSize: 18, fontWeight: pw.FontWeight.bold),
+                  style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
                 ),
                 pw.Divider(),
                 pw.Bullet(
-                  text:
-                      'Total Destinations: ${_summaryStats['total_destinations'] ?? 0} (${_summaryStats['active_destinations'] ?? 0} active)',
+                  text: 'Total Destinations: ${_summaryStats['total_destinations'] ?? 0} (${_summaryStats['active_destinations'] ?? 0} active)',
                 ),
                 pw.Bullet(
-                  text:
-                      'Total Users: ${_summaryStats['total_users'] ?? 0} (${_summaryStats['pending_users'] ?? 0} pending)',
+                  text: 'Total Users: ${_summaryStats['total_users'] ?? 0} (${_summaryStats['pending_users'] ?? 0} pending)',
                 ),
                 pw.Bullet(
-                  text:
-                      'Average Rating: ${_summaryStats['avg_rating'] ?? '0.0'}',
+                  text: 'Average Rating: ${_summaryStats['avg_rating'] ?? '0.0'}',
                 ),
                 pw.Bullet(
-                  text:
-                      'Monthly Visits: ${_summaryStats['monthly_visits'] ?? 'N/A'}',
+                  text: 'Monthly Visits: ${_summaryStats['monthly_visits'] ?? 'N/A'}',
                 ),
                 pw.SizedBox(height: 20),
                 pw.Text(
                   'CATEGORY STATISTICS',
-                  style: pw.TextStyle(
-                      fontSize: 18, fontWeight: pw.FontWeight.bold),
+                  style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
                 ),
                 pw.Divider(),
                 pw.Table.fromTextArray(
@@ -190,7 +181,7 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
   }
 
   // ────────────────────────────────────────────────
-  //  EXPORT FUNCTION
+  //  EXPORT FUNCTION – CORRECT FOR file_saver ^0.3.1
   // ────────────────────────────────────────────────
   Future<void> _performExport(String format, BuildContext ctx) async {
     try {
@@ -198,37 +189,51 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-            content: Text('Downloading $format...'),
-            duration: const Duration(seconds: 2)),
+          content: Text('Generating $format report...'),
+          duration: const Duration(seconds: 3),
+        ),
       );
 
       Uint8List fileBytes = await _generateReportBytes(format);
 
-      MimeType mimeType =
-          format == 'Excel' ? MimeType.microsoftExcel : MimeType.pdf;
-      String ext = format == 'Excel' ? 'xlsx' : 'pdf';
-      String name = 'GeoRoute_Report_${DateTime.now().millisecondsSinceEpoch}';
+      final String extension = format == 'Excel' ? 'xlsx' : 'pdf';
+      final String fileName = 'GeoRoute_Report_${DateTime.now().millisecondsSinceEpoch}.$extension';
 
-      await FileSaver.instance.saveFile(
-        name: name,
+      final MimeType mimeType = format == 'Excel' 
+          ? MimeType.microsoftExcel 
+          : MimeType.pdf;
+
+      // Correct parameters for file_saver 0.3.1: use fileExtension instead of ext
+      final String? savedPath = await FileSaver.instance.saveAs(
+        name: fileName,
         bytes: fileBytes,
-        ext: ext,
+        fileExtension: extension,  // ← renamed from 'ext' in v0.3.0+
         mimeType: mimeType,
       );
 
-      if (mounted) {
+      if (savedPath != null && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content: Text('Download started!'),
-              backgroundColor: Colors.green),
+            content: Text('Report saved successfully!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Save cancelled or failed'),
+            backgroundColor: Colors.orange,
+          ),
         );
       }
     } catch (e) {
-      print(e);
+      debugPrint('Export error: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text('Export failed: $e'), backgroundColor: Colors.red),
+            content: Text('Export failed: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
@@ -267,7 +272,7 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
   }
 
   // ────────────────────────────────────────────────
-  //  UI WIDGETS – USING REAL DATA
+  //  UI WIDGETS – USING REAL DATA (unchanged)
   // ────────────────────────────────────────────────
   Widget _buildSummaryCards() {
     final cards = [
@@ -388,10 +393,6 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
     );
   }
 
-  // ────────────────────────────────────────────────
-  //  SIDEBAR, HEADER, DIALOG – unchanged from your code
-  // ────────────────────────────────────────────────
-
   Widget _buildSideNavigationBar(BuildContext context) {
     return Container(
       width: 250,
@@ -427,6 +428,8 @@ class _AdminReportsPageState extends State<AdminReportsPage> {
               context, Icons.people, 'Users', '/AdminUsers', false),
           _buildSideNavItem(
               context, Icons.description, 'Reports', '/AdminReports', true),
+                          _buildSideNavItem(context, Icons.slideshow, 'Onboarding Slides',
+                '/admin-onboarding', false),
           const Spacer(),
           _buildSideNavItem(context, Icons.logout, 'Logout', '/', false,
               isLogout: true),

@@ -1,5 +1,12 @@
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:image_picker_web/image_picker_web.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:http/http.dart' as http;
+import 'package:path/path.dart' as path;
 import '../services/supabase_service.dart';
 
 class AdminDestinationsPage extends StatefulWidget {
@@ -16,6 +23,13 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
   bool _isLoading = true;
   bool _categoriesLoading = true;
   String _searchQuery = '';
+
+  final supabase = Supabase.instance.client;
+  final ImagePicker _picker = ImagePicker();
+
+  // ─── Replace these with your real Supabase values ─────────────────────────
+  static const String supabaseUrl = 'https://xrecadjyvgjuskjdxbbo.supabase.co';
+  static const String supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhyZWNhZGp5dmdqdXNramR4YmJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAyOTU0MzUsImV4cCI6MjA4NTg3MTQzNX0.pLqBvF9Jq3s3MddVs97oguax0Wq74Y8i18aT8MSk83M';
 
   @override
   void initState() {
@@ -36,37 +50,105 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
     } catch (e) {
       setState(() => _isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('Error loading destinations: $e'),
-            backgroundColor: Colors.red),
+        SnackBar(content: Text('Error loading destinations: $e'), backgroundColor: Colors.red),
       );
     }
   }
 
   Future<void> _loadCategories() async {
     try {
-      final supabase = Supabase.instance.client;
-      final response = await supabase
-          .from('categories')
-          .select()
-          .order('name', ascending: true);
-
+      final response = await supabase.from('categories').select().order('name', ascending: true);
       setState(() {
-        _availableCategories = (response as List<dynamic>)
-            .map((row) => row['name'] as String)
-            .toList();
-        if (_availableCategories.isEmpty) {
-          _availableCategories = ['Uncategorized'];
-        }
+        _availableCategories = (response as List<dynamic>).map((row) => row['name'] as String).toList();
+        if (_availableCategories.isEmpty) _availableCategories = ['Uncategorized'];
         _categoriesLoading = false;
       });
     } catch (e) {
       setState(() => _categoriesLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('Error loading categories: $e'),
-            backgroundColor: Colors.red),
+        SnackBar(content: Text('Error loading categories: $e'), backgroundColor: Colors.red),
       );
+    }
+  }
+
+  // ─── HELPERS TO DELETE OLD IMAGE ──────────────────────────────────────────
+  String? _getStoragePathFromUrl(String? publicUrl) {
+    if (publicUrl == null || publicUrl.isEmpty) return null;
+
+    final uri = Uri.parse(publicUrl);
+    final segments = uri.pathSegments;
+
+    final publicIndex = segments.indexOf('public');
+    if (publicIndex == -1 || publicIndex + 1 >= segments.length) return null;
+
+    return segments.skip(publicIndex + 1).join('/');
+  }
+
+  Future<void> _deleteOldImage(String? oldUrl) async {
+    if (oldUrl == null || oldUrl.isEmpty) return;
+
+    final path = _getStoragePathFromUrl(oldUrl);
+    if (path == null) return;
+
+    try {
+      await supabase.storage.from('destination-images').remove([path]);
+      debugPrint('Old image deleted: $path');
+    } catch (e) {
+      debugPrint('Failed to delete old image: $e');
+    }
+  }
+
+  // ─── IMAGE UPLOAD HELPER – SUPPORTS MOBILE & WEB ──────────────────────────
+  Future<String?> _uploadImage(dynamic imageInput, String destinationName) async {
+    try {
+      final safeName = destinationName.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_').toLowerCase();
+      final fileName = '${DateTime.now().millisecondsSinceEpoch}_$safeName.jpg';
+      final storagePath = 'destination-images/$fileName';
+
+      String? publicUrl;
+
+      if (kIsWeb) {
+        // Web: imageInput is Uint8List
+        final Uint8List? bytes = imageInput as Uint8List?;
+        if (bytes == null || bytes.isEmpty) return null;
+
+        final request = http.MultipartRequest(
+          'POST',
+          Uri.parse('$supabaseUrl/storage/v1/object/$storagePath'),
+        );
+
+        request.headers['Authorization'] = 'Bearer $supabaseAnonKey';
+        request.headers['apikey'] = supabaseAnonKey;
+
+        request.files.add(http.MultipartFile.fromBytes(
+          'file',
+          bytes,
+          filename: fileName,
+        ));
+
+        final response = await request.send();
+
+        if (response.statusCode == 200) {
+          publicUrl = '$supabaseUrl/storage/v1/object/public/$storagePath';
+        } else {
+          throw Exception('Web upload failed: ${response.reasonPhrase}');
+        }
+      } else {
+        // Mobile: imageInput is File
+        final File imageFile = imageInput as File;
+        await supabase.storage.from('destination-images').upload(storagePath, imageFile);
+        publicUrl = supabase.storage.from('destination-images').getPublicUrl(storagePath);
+      }
+
+      return publicUrl;
+    } catch (e) {
+      debugPrint('Upload error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Image upload failed: $e'), backgroundColor: Colors.red),
+        );
+      }
+      return null;
     }
   }
 
@@ -129,8 +211,7 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
                 child: DropdownButton<String?>(
                   isExpanded: true,
                   value: currentValue,
-                  icon:
-                      const Icon(Icons.keyboard_arrow_down, color: Colors.grey),
+                  icon: const Icon(Icons.keyboard_arrow_down, color: Colors.grey),
                   items: items.map((String value) {
                     return DropdownMenuItem<String?>(
                       value: value,
@@ -158,134 +239,200 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
     final activitiesController = TextEditingController();
     final accommodationController = TextEditingController();
     final priceController = TextEditingController();
-    final locationController = TextEditingController(); // ← Fixed name
+    final locationController = TextEditingController();
     final timeController = TextEditingController();
-    final imageController = TextEditingController();
     final latController = TextEditingController();
     final lngController = TextEditingController();
 
+    dynamic _selectedImage; // File on mobile, Uint8List on web
+    String? _imagePreviewUrl;
+    bool _isUploading = false;
     String? selectedCategory =
         _availableCategories.isNotEmpty ? _availableCategories.first : null;
 
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Add New Destination'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildLabelAndField('Destination Name', 'e.g. Tinago Falls',
-                  controller: nameController),
-              const SizedBox(height: 16),
-              _buildLabelAndDropdown(
-                'Category',
-                _availableCategories,
-                initialValue: selectedCategory,
-                onChanged: (val) => selectedCategory = val,
-              ),
-              const SizedBox(height: 16),
-              _buildLabelAndField(
-                  'Main Image URL', 'https://example.com/image.jpg',
-                  controller: imageController),
-              const SizedBox(height: 16),
-              _buildLabelAndField('Description', 'Short description...',
-                  maxLines: 3, controller: descController),
-              const SizedBox(height: 16),
-              _buildLabelAndField(
-                  'Attractions', 'e.g. Natural pool, Rock formations',
-                  maxLines: 2, controller: attractionsController),
-              const SizedBox(height: 16),
-              _buildLabelAndField('Activities', 'e.g. Swimming, Trekking',
-                  maxLines: 2, controller: activitiesController),
-              const SizedBox(height: 16),
-              _buildLabelAndField(
-                  'Nearby Accommodations', 'e.g. Homestays ₱800–₱2000',
-                  maxLines: 2, controller: accommodationController),
-              const SizedBox(height: 16),
-              _buildLabelAndField('Price Range', '₱50 – ₱500',
-                  controller: priceController),
-              const SizedBox(height: 16),
-              _buildLabelAndField(
-                  'Location', 'Cagayan de Oro City, Jasaan, etc.',
-                  controller: locationController),
-              const SizedBox(height: 16),
-              _buildLabelAndField('Travel Time from CDO', '45 mins – 1 hour',
-                  controller: timeController),
-              const SizedBox(height: 24),
-              const Text('Location Coordinates (Manual)',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                      child: _buildLabelAndField('Latitude', 'e.g. 8.4772',
-                          controller: latController)),
-                  const SizedBox(width: 8),
-                  Expanded(
-                      child: _buildLabelAndField('Longitude', 'e.g. 124.6478',
-                          controller: lngController)),
-                ],
-              ),
-            ],
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Add New Destination'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildLabelAndField('Destination Name*', 'e.g. Tinago Falls',
+                    controller: nameController),
+                const SizedBox(height: 16),
+                _buildLabelAndDropdown(
+                  'Category*',
+                  _availableCategories,
+                  initialValue: selectedCategory,
+                  onChanged: (val) => setDialogState(() => selectedCategory = val),
+                ),
+                const SizedBox(height: 24),
+
+                const Text('Main Image', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: () async {
+                    if (kIsWeb) {
+                      // Web
+                      final Uint8List? picked = await ImagePickerWeb.getImageAsBytes();
+                      if (picked == null || picked.isEmpty) return;
+
+                      setDialogState(() {
+                        _selectedImage = picked;
+                        _isUploading = true;
+                      });
+
+                      final name = nameController.text.trim().isNotEmpty
+                          ? nameController.text.trim()
+                          : 'temp_${DateTime.now().millisecondsSinceEpoch}';
+
+                      final uploadedUrl = await _uploadImage(picked, name);
+
+                      setDialogState(() {
+                        _imagePreviewUrl = uploadedUrl;
+                        _isUploading = false;
+                      });
+                    } else {
+                      // Mobile - your original code
+                      final XFile? picked = await _picker.pickImage(source: ImageSource.gallery);
+                      if (picked == null) return;
+
+                      setDialogState(() {
+                        _selectedImage = File(picked.path);
+                        _isUploading = true;
+                      });
+
+                      final name = nameController.text.trim().isNotEmpty
+                          ? nameController.text.trim()
+                          : 'temp_${DateTime.now().millisecondsSinceEpoch}';
+
+                      final uploadedUrl = await _uploadImage(File(picked.path), name);
+
+                      setDialogState(() {
+                        _imagePreviewUrl = uploadedUrl;
+                        _isUploading = false;
+                      });
+                    }
+                  },
+                  child: Container(
+                    height: 160,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[200],
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.grey.shade400),
+                    ),
+                    child: _isUploading
+                        ? const Center(child: CircularProgressIndicator())
+                        : _imagePreviewUrl != null
+                            ? ClipRRect(
+                                borderRadius: BorderRadius.circular(12),
+                                child: kIsWeb && _selectedImage is Uint8List
+                                    ? Image.memory(_selectedImage as Uint8List, fit: BoxFit.cover)
+                                    : Image.network(
+                                        _imagePreviewUrl!,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (_, __, ___) => const Icon(Icons.broken_image, size: 60, color: Colors.grey),
+                                      ),
+                              )
+                            : (_selectedImage != null && !kIsWeb)
+                                ? ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Image.file(_selectedImage as File, fit: BoxFit.cover),
+                                  )
+                                : const Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.add_photo_alternate, size: 48, color: Colors.grey),
+                                      SizedBox(height: 8),
+                                      Text('Tap to upload image', style: TextStyle(color: Colors.grey)),
+                                    ],
+                                  ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                _buildLabelAndField('Description', 'Short description...', maxLines: 3, controller: descController),
+                const SizedBox(height: 16),
+                _buildLabelAndField('Attractions', 'e.g. Natural pool, Rock formations', maxLines: 2, controller: attractionsController),
+                const SizedBox(height: 16),
+                _buildLabelAndField('Activities', 'e.g. Swimming, Trekking', maxLines: 2, controller: activitiesController),
+                const SizedBox(height: 16),
+                _buildLabelAndField('Nearby Accommodations', 'e.g. Homestays ₱800–₱2000', maxLines: 2, controller: accommodationController),
+                const SizedBox(height: 16),
+                _buildLabelAndField('Price Range', '₱50 – ₱500', controller: priceController),
+                const SizedBox(height: 16),
+                _buildLabelAndField('Location', 'Cagayan de Oro City, Jasaan, etc.', controller: locationController),
+                const SizedBox(height: 16),
+                _buildLabelAndField('Travel Time from CDO', '45 mins – 1 hour', controller: timeController),
+                const SizedBox(height: 24),
+                const Text('Location Coordinates (Manual)',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(child: _buildLabelAndField('Latitude', 'e.g. 8.4772', controller: latController)),
+                    const SizedBox(width: 8),
+                    Expanded(child: _buildLabelAndField('Longitude', 'e.g. 124.6478', controller: lngController)),
+                  ],
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () async {
+                final name = nameController.text.trim();
+                if (name.isEmpty || selectedCategory == null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Name and Category are required'), backgroundColor: Colors.red),
+                  );
+                  return;
+                }
+
+                final latText = latController.text.trim();
+                final lngText = lngController.text.trim();
+                double? latitude = latText.isNotEmpty ? double.tryParse(latText) : null;
+                double? longitude = lngText.isNotEmpty ? double.tryParse(lngText) : null;
+
+                final newDest = {
+                  'name': name,
+                  'category': selectedCategory,
+                  'image_url': _imagePreviewUrl,
+                  'description': descController.text.trim(),
+                  'attractions': attractionsController.text.trim(),
+                  'activities': activitiesController.text.trim(),
+                  'accommodation': accommodationController.text.trim(),
+                  'price_range': priceController.text.trim(),
+                  'location': locationController.text.trim(),
+                  'travel_time': timeController.text.trim(),
+                  'rating': 4.0,
+                  'status': 'active',
+                  'latitude': latitude,
+                  'longitude': longitude,
+                };
+
+                try {
+                  await _service.addDestination(newDest);
+                  await _loadDestinations();
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Destination added successfully'), backgroundColor: Colors.green),
+                  );
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Failed to add: $e'), backgroundColor: Colors.red),
+                  );
+                }
+              },
+              child: const Text('Add'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () async {
-              final name = nameController.text.trim();
-              if (name.isEmpty || selectedCategory == null) return;
-
-              final latText = latController.text.trim();
-              final lngText = lngController.text.trim();
-
-              double? latitude =
-                  latText.isNotEmpty ? double.tryParse(latText) : null;
-              double? longitude =
-                  lngText.isNotEmpty ? double.tryParse(lngText) : null;
-
-              final newDest = {
-                'name': name,
-                'category': selectedCategory,
-                'image_url': imageController.text.trim().isNotEmpty
-                    ? imageController.text.trim()
-                    : null,
-                'description': descController.text.trim(),
-                'attractions': attractionsController.text.trim(),
-                'activities': activitiesController.text.trim(),
-                'accommodation': accommodationController.text.trim(),
-                'price_range': priceController.text.trim(),
-                'location': locationController.text.trim(),
-                'travel_time': timeController.text.trim(),
-                'rating': 4.0,
-                'status': 'active',
-                'latitude': latitude,
-                'longitude': longitude,
-              };
-
-              try {
-                await _service.addDestination(newDest);
-                await _loadDestinations();
-                Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                      content: Text('Destination added successfully'),
-                      backgroundColor: Colors.green),
-                );
-              } catch (e) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                      content: Text('Failed to add: $e'),
-                      backgroundColor: Colors.red),
-                );
-              }
-            },
-            child: const Text('Add'),
-          ),
-        ],
       ),
     );
   }
@@ -293,138 +440,204 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
   // ─── EDIT DESTINATION DIALOG ──────────────────────────────────────────────
   void _showEditDestinationDialog(Map<String, dynamic> data) {
     final nameController = TextEditingController(text: data['name']);
-    final descController =
-        TextEditingController(text: data['description'] ?? '');
-    final attractionsController =
-        TextEditingController(text: data['attractions'] ?? '');
-    final activitiesController =
-        TextEditingController(text: data['activities'] ?? '');
-    final accommodationController =
-        TextEditingController(text: data['accommodation'] ?? '');
-    final priceController =
-        TextEditingController(text: data['price_range'] ?? '');
-    final locationController =
-        TextEditingController(text: data['location'] ?? '');
-    final timeController =
-        TextEditingController(text: data['travel_time'] ?? '');
-    final imageController =
-        TextEditingController(text: data['image_url'] ?? '');
-    final latController =
-        TextEditingController(text: data['latitude']?.toString() ?? '');
-    final lngController =
-        TextEditingController(text: data['longitude']?.toString() ?? '');
+    final descController = TextEditingController(text: data['description'] ?? '');
+    final attractionsController = TextEditingController(text: data['attractions'] ?? '');
+    final activitiesController = TextEditingController(text: data['activities'] ?? '');
+    final accommodationController = TextEditingController(text: data['accommodation'] ?? '');
+    final priceController = TextEditingController(text: data['price_range'] ?? '');
+    final locationController = TextEditingController(text: data['location'] ?? '');
+    final timeController = TextEditingController(text: data['travel_time'] ?? '');
+    final latController = TextEditingController(text: data['latitude']?.toString() ?? '');
+    final lngController = TextEditingController(text: data['longitude']?.toString() ?? '');
 
+    dynamic _newSelectedImage; // File on mobile, Uint8List on web
+    String? _imagePreviewUrl = data['image_url'];
+    String? _oldImageUrl = data['image_url'];
+    bool _isUploading = false;
     String? selectedCategory = data['category'];
-    if (selectedCategory == null ||
-        !_availableCategories.contains(selectedCategory)) {
-      selectedCategory =
-          _availableCategories.isNotEmpty ? _availableCategories.first : null;
+    if (selectedCategory == null || !_availableCategories.contains(selectedCategory)) {
+      selectedCategory = _availableCategories.isNotEmpty ? _availableCategories.first : null;
     }
 
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Edit Destination'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildLabelAndField('Destination Name', 'e.g. Tinago Falls',
-                  controller: nameController),
-              const SizedBox(height: 16),
-              _buildLabelAndDropdown(
-                'Category',
-                _availableCategories,
-                initialValue: selectedCategory,
-                onChanged: (val) => selectedCategory = val,
-              ),
-              const SizedBox(height: 16),
-              _buildLabelAndField('Main Image URL', 'https://...',
-                  controller: imageController),
-              const SizedBox(height: 16),
-              _buildLabelAndField('Description', 'Short description...',
-                  maxLines: 3, controller: descController),
-              const SizedBox(height: 16),
-              _buildLabelAndField(
-                  'Attractions', 'e.g. Natural pool, Rock formations',
-                  maxLines: 2, controller: attractionsController),
-              const SizedBox(height: 16),
-              _buildLabelAndField('Activities', 'e.g. Swimming, Trekking',
-                  maxLines: 2, controller: activitiesController),
-              const SizedBox(height: 16),
-              _buildLabelAndField(
-                  'Nearby Accommodations', 'e.g. Homestays ₱800–₱2000',
-                  maxLines: 2, controller: accommodationController),
-              const SizedBox(height: 16),
-              _buildLabelAndField('Price Range', '₱50 – ₱500',
-                  controller: priceController),
-              const SizedBox(height: 16),
-              _buildLabelAndField(
-                  'Location', 'Cagayan de Oro City, Jasaan, etc.',
-                  controller: locationController),
-              const SizedBox(height: 16),
-              _buildLabelAndField('Travel Time from CDO', '45 mins – 1 hour',
-                  controller: timeController),
-              const SizedBox(height: 24),
-              const Text('Location Coordinates (Manual)',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                      child: _buildLabelAndField('Latitude', 'e.g. 8.4772',
-                          controller: latController)),
-                  const SizedBox(width: 8),
-                  Expanded(
-                      child: _buildLabelAndField('Longitude', 'e.g. 124.6478',
-                          controller: lngController)),
-                ],
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () async {
-              final updates = {
-                'name': nameController.text.trim(),
-                'category': selectedCategory,
-                'image_url': imageController.text.trim(),
-                'description': descController.text.trim(),
-                'attractions': attractionsController.text.trim(),
-                'activities': activitiesController.text.trim(),
-                'accommodation': accommodationController.text.trim(),
-                'price_range': priceController.text.trim(),
-                'location': locationController.text.trim(),
-                'travel_time': timeController.text.trim(),
-                'status': data['status'] ?? 'active',
-                'latitude': double.tryParse(latController.text.trim()),
-                'longitude': double.tryParse(lngController.text.trim()),
-              };
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Edit Destination'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildLabelAndField('Destination Name', 'e.g. Tinago Falls', controller: nameController),
+                const SizedBox(height: 16),
+                _buildLabelAndDropdown(
+                  'Category',
+                  _availableCategories,
+                  initialValue: selectedCategory,
+                  onChanged: (val) => setDialogState(() => selectedCategory = val),
+                ),
+                const SizedBox(height: 24),
 
-              try {
-                await _service.updateDestination(data['id'], updates);
-                await _loadDestinations();
-                Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                      content: Text('Destination updated'),
-                      backgroundColor: Colors.green),
-                );
-              } catch (e) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                      content: Text('Failed to update: $e'),
-                      backgroundColor: Colors.red),
-                );
-              }
-            },
-            child: const Text('Save'),
+                const Text('Main Image', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: () async {
+                    if (kIsWeb) {
+                      final Uint8List? picked = await ImagePickerWeb.getImageAsBytes();
+                      if (picked == null || picked.isEmpty) return;
+
+                      setDialogState(() {
+                        _newSelectedImage = picked;
+                        _isUploading = true;
+                      });
+
+                      final name = nameController.text.trim().isNotEmpty
+                          ? nameController.text.trim()
+                          : data['name'] ?? 'edit_${DateTime.now().millisecondsSinceEpoch}';
+
+                      final uploadedUrl = await _uploadImage(picked, name);
+
+                      setDialogState(() {
+                        _imagePreviewUrl = uploadedUrl;
+                        _isUploading = false;
+                      });
+                    } else {
+                      final XFile? picked = await _picker.pickImage(source: ImageSource.gallery);
+                      if (picked == null) return;
+
+                      setDialogState(() {
+                        _newSelectedImage = File(picked.path);
+                        _isUploading = true;
+                      });
+
+                      final name = nameController.text.trim().isNotEmpty
+                          ? nameController.text.trim()
+                          : data['name'] ?? 'edit_${DateTime.now().millisecondsSinceEpoch}';
+
+                      final uploadedUrl = await _uploadImage(File(picked.path), name);
+
+                      setDialogState(() {
+                        _imagePreviewUrl = uploadedUrl;
+                        _isUploading = false;
+                      });
+                    }
+                  },
+                  child: Container(
+                    height: 180,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[200],
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.grey.shade400),
+                    ),
+                    child: _isUploading
+                        ? const Center(child: CircularProgressIndicator())
+                        : _imagePreviewUrl != null
+                            ? ClipRRect(
+                                borderRadius: BorderRadius.circular(12),
+                                child: kIsWeb && _newSelectedImage is Uint8List
+                                    ? Image.memory(_newSelectedImage as Uint8List, fit: BoxFit.cover)
+                                    : Image.network(
+                                        _imagePreviewUrl!,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (_, __, ___) => const Icon(Icons.broken_image, size: 60, color: Colors.grey),
+                                      ),
+                              )
+                            : (_newSelectedImage != null && !kIsWeb)
+                                ? ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Image.file(_newSelectedImage as File, fit: BoxFit.cover),
+                                  )
+                                : const Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.add_photo_alternate, size: 48, color: Colors.grey),
+                                      SizedBox(height: 8),
+                                      Text('Tap to upload new image', style: TextStyle(color: Colors.grey)),
+                                    ],
+                                  ),
+                  ),
+                ),
+                if (_imagePreviewUrl != null && _newSelectedImage == null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text('Current image will be kept unless replaced.',
+                        style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                  ),
+                const SizedBox(height: 16),
+
+                _buildLabelAndField('Description', 'Short description...', maxLines: 3, controller: descController),
+                const SizedBox(height: 16),
+                _buildLabelAndField('Attractions', 'e.g. Natural pool, Rock formations', maxLines: 2, controller: attractionsController),
+                const SizedBox(height: 16),
+                _buildLabelAndField('Activities', 'e.g. Swimming, Trekking', maxLines: 2, controller: activitiesController),
+                const SizedBox(height: 16),
+                _buildLabelAndField('Nearby Accommodations', 'e.g. Homestays ₱800–₱2000', maxLines: 2, controller: accommodationController),
+                const SizedBox(height: 16),
+                _buildLabelAndField('Price Range', '₱50 – ₱500', controller: priceController),
+                const SizedBox(height: 16),
+                _buildLabelAndField('Location', 'Cagayan de Oro City, Jasaan, etc.', controller: locationController),
+                const SizedBox(height: 16),
+                _buildLabelAndField('Travel Time from CDO', '45 mins – 1 hour', controller: timeController),
+                const SizedBox(height: 24),
+                const Text('Location Coordinates (Manual)',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(child: _buildLabelAndField('Latitude', 'e.g. 8.4772', controller: latController)),
+                    const SizedBox(width: 8),
+                    Expanded(child: _buildLabelAndField('Longitude', 'e.g. 124.6478', controller: lngController)),
+                  ],
+                ),
+              ],
+            ),
           ),
-        ],
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () async {
+                final updates = {
+                  'name': nameController.text.trim(),
+                  'category': selectedCategory,
+                  'image_url': _imagePreviewUrl,
+                  'description': descController.text.trim(),
+                  'attractions': attractionsController.text.trim(),
+                  'activities': activitiesController.text.trim(),
+                  'accommodation': accommodationController.text.trim(),
+                  'price_range': priceController.text.trim(),
+                  'location': locationController.text.trim(),
+                  'travel_time': timeController.text.trim(),
+                  'status': data['status'] ?? 'active',
+                  'latitude': double.tryParse(latController.text.trim()),
+                  'longitude': double.tryParse(lngController.text.trim()),
+                };
+
+                try {
+                  if (_newSelectedImage != null && 
+                      _oldImageUrl != null && 
+                      _imagePreviewUrl != null && 
+                      _imagePreviewUrl != _oldImageUrl) {
+                    await _deleteOldImage(_oldImageUrl);
+                  }
+
+                  await _service.updateDestination(data['id'].toString(), updates);
+                  await _loadDestinations();
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Destination updated'), backgroundColor: Colors.green),
+                  );
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Failed to update: $e'), backgroundColor: Colors.red),
+                  );
+                }
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -435,11 +648,9 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Destination'),
-        content: const Text(
-            'Are you sure? This will also delete any trip plans that include it.'),
+        content: const Text('Are you sure? This will also delete any trip plans that include it.'),
         actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           TextButton(
             onPressed: () async {
               try {
@@ -447,18 +658,12 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
                 await _loadDestinations();
                 Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                      content: Text('Destination deleted'),
-                      backgroundColor: Colors.orange),
+                  const SnackBar(content: Text('Destination deleted'), backgroundColor: Colors.orange),
                 );
               } catch (e) {
                 Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                        'Cannot delete: $e\n(possibly used in user plans)'),
-                    backgroundColor: Colors.red,
-                  ),
+                  SnackBar(content: Text('Cannot delete: $e\n(possibly used in user plans)'), backgroundColor: Colors.red),
                 );
               }
             },
@@ -557,7 +762,7 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
     );
   }
 
-  // ─── SIDE NAVIGATION & OTHER HELPERS (unchanged) ──────────────────────────
+  // ─── SIDE NAVIGATION & OTHER HELPERS ──────────────────────────────────────
   Widget _buildSideNavigationBar(BuildContext context) {
     return Container(
       width: 250,
@@ -585,6 +790,8 @@ class _AdminDestinationsPageState extends State<AdminDestinationsPage> {
               context, Icons.people, 'Users', '/AdminUsers', false),
           _buildSideNavItem(
               context, Icons.description, 'Reports', '/AdminReports', false),
+                          _buildSideNavItem(context, Icons.slideshow, 'Onboarding Slides',
+                '/admin-onboarding', false),
           const Spacer(),
           _buildSideNavItem(context, Icons.logout, 'Logout', '/', false,
               isLogout: true),

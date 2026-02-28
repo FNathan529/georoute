@@ -66,7 +66,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
     super.initState();
     _fetchOnboardingSlides();
 
-    _timer = Timer.periodic(const Duration(seconds: 5), (timer) {
+    _timer = Timer.periodic(const Duration(seconds: 3), (timer) {
       if (mounted && _slides.isNotEmpty) {
         setState(() {
           _currentPage = (_currentPage + 1) % _slides.length;
@@ -166,10 +166,10 @@ class _OnboardingPageState extends State<OnboardingPage> {
                     children: [
                       Text(
                         'Georoute',
-                        style: GoogleFonts.caveat(
+                        style: GoogleFonts.playfairDisplay(
                           textStyle: const TextStyle(
                             color: Colors.white,
-                            fontSize: 95,
+                            fontSize: 85,
                             fontWeight: FontWeight
                                 .bold, // or w700/w900 for extra impact
                             letterSpacing: -1.5,

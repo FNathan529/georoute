@@ -301,6 +301,8 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
               context, Icons.people, 'Users', '/AdminUsers', false),
           _buildSideNavItem(
               context, Icons.description, 'Reports', '/AdminReports', false),
+                          _buildSideNavItem(context, Icons.slideshow, 'Onboarding Slides',
+                '/admin-onboarding', false),
           const Spacer(),
           _buildSideNavItem(context, Icons.logout, 'Logout', '/', false,
               isLogout: true),

@@ -200,6 +200,8 @@ class _AdminUsersPageState extends State<AdminUsersPage> {
           _buildSideNavItem(
               context, Icons.description, 'Reports', '/AdminReports', false),
           const Spacer(),
+                      _buildSideNavItem(context, Icons.slideshow, 'Onboarding Slides',
+                '/admin-onboarding', false),
           _buildSideNavItem(context, Icons.logout, 'Logout', '/', false,
               isLogout: true),
         ],
